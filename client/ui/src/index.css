@@ -1,0 +1,590 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * Golos Text (Paratype, SIL OFL 1.1, assets/fonts/golos-text/OFL.txt). Local
+ * files only: the CSP allows font-src 'self'. Latin and basic Cyrillic,
+ * weights 400/500/600, from @fontsource/golos-text 5.3.0.
+ */
+@font-face {
+  font-family: "Golos Text";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/golos-text/golos-text-cyrillic-400-normal.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Golos Text";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./assets/fonts/golos-text/golos-text-cyrillic-500-normal.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Golos Text";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./assets/fonts/golos-text/golos-text-cyrillic-600-normal.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Golos Text";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/golos-text/golos-text-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Golos Text";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./assets/fonts/golos-text/golos-text-latin-500-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Golos Text";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./assets/fonts/golos-text/golos-text-latin-600-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/*
+ * RosTalk design tokens, direction A+C (stage P9).
+ *
+ * A preset owns the surfaces, text and semantic colours; an accent overrides
+ * only --accent, --accent-strong and --accent-foreground. Every preset sets
+ * color-scheme, so form controls follow the same dark/light choice as the
+ * tokens. data-theme remains the derived dark/light flag: the tray, the
+ * window title and an older UI bundle still read it.
+ *
+ * The frame is token-driven too. --chrome is the window behind the panels
+ * (title bar, bottom bar, the gaps). Dark presets keep the side panels flush
+ * and raise the main column one step; the light preset lays the panels on the
+ * chrome as sheets (--sheet-*). Avatar fills are tokens so initials stay
+ * readable in both themes.
+ *
+ * Contrast is a tested contract, not a preference: src/test/tokens.test.ts
+ * parses this file and fails when any preset/accent pair drops below WCAG AA.
+ * Keep the numbers in OKLCH and change only the chroma when a hue is wrong.
+ */
+:root {
+  color-scheme: dark;
+
+  /* Density, corner radius and interface scale (appearance settings). */
+  --ui-radius-xs: 4px;
+  --ui-radius-sm: 6px;
+  --ui-radius-md: 8px;
+  --ui-radius-lg: 12px;
+  --ui-radius-xl: 16px;
+  --ui-scale: 1;
+  /* 1 when the desktop shell zooms the webview natively; equals --ui-scale in
+     the CSS fallback used by the browser preview. */
+  --fixed-scale: 1;
+  --row-height: 32px;
+
+  /* Frame: flush side panels, the main column rounded on top (direction A). */
+  --sheet-gap: 0px;
+  --sheet-radius-side: 0 var(--ui-radius-lg) 0 0;
+  --sheet-radius-main: var(--ui-radius-lg) var(--ui-radius-lg) 0 0;
+  --sheet-radius-members: var(--ui-radius-lg) 0 0 0;
+  --sheet-border: 0 solid transparent;
+  --sheet-shadow: none;
+  --chat-avatar: 36px;
+
+  /* Media overlays sit on the video frame, not on the interface, so they keep
+     one warm dark plate and the ember ink in every preset and theme. */
+  --media-plate: oklch(0.18 0.01 60 / 0.72);
+  --media-ink: oklch(0.96 0.005 70);
+  --media-ink-muted: oklch(0.96 0.005 70 / 0.65);
+  --media-ember-border: oklch(0.8 0.145 63);
+  --media-ember-ink: oklch(0.86 0.13 67);
+
+  --shadow-panel: 0 12px 32px rgb(0 0 0 / 0.38);
+  --scrim: oklch(0.12 0 0 / 0.62);
+}
+
+/* --------------------------------------------------------------- presets --- */
+
+/* «Очаг», the default: warm graphite with the ember accent. */
+[data-preset="rostalk"] {
+  color-scheme: dark;
+
+  --chrome: oklch(0.165 0.006 60);
+  --background: oklch(0.205 0.006 60);
+  --surface: oklch(0.18 0.006 60);
+  --surface-raised: oklch(0.245 0.007 60);
+  --surface-hover: oklch(0.255 0.007 60);
+  --surface-active: oklch(0.29 0.009 60);
+  --border: oklch(0.285 0.008 60);
+  --border-strong: oklch(0.52 0.011 60);
+  --foreground: oklch(0.935 0.006 70);
+  --muted-foreground: oklch(0.76 0.01 65);
+  --faint-foreground: oklch(0.66 0.012 65);
+
+  --accent: oklch(0.775 0.145 63);
+  --accent-strong: oklch(0.835 0.15 70);
+  --accent-foreground: oklch(0.225 0.035 63);
+  --danger: oklch(0.7 0.17 25);
+  --danger-foreground: oklch(0.2 0.02 25);
+  --success: oklch(0.74 0.15 150);
+  --success-foreground: oklch(0.2 0.02 150);
+  --warning: oklch(0.815 0.135 85);
+  --warning-foreground: oklch(0.2 0.02 85);
+
+  --avatar-fill-l: 0.4;
+  --avatar-fill-c: 0.06;
+  --avatar-ink-l: 0.92;
+  --avatar-ink-c: 0.03;
+
+  --shadow-panel: 0 12px 32px rgb(0 0 0 / 0.42);
+  --scrim: oklch(0.1 0 0 / 0.64);
+}
+
+/* «Бумага»: the light theme of the «Компания» direction. Panels lie as sheets
+   on a calm table surface; the accent is the same ember. */
+[data-preset="paper"] {
+  color-scheme: light;
+
+  --chrome: oklch(0.925 0.007 95);
+  --background: oklch(0.993 0.002 95);
+  --surface: oklch(0.993 0.002 95);
+  --surface-raised: oklch(1 0 0);
+  --surface-hover: oklch(0.96 0.005 95);
+  --surface-active: oklch(0.935 0.03 65);
+  --border: oklch(0.905 0.008 95);
+  --border-strong: oklch(0.62 0.015 95);
+  --foreground: oklch(0.24 0.012 95);
+  --muted-foreground: oklch(0.44 0.012 95);
+  --faint-foreground: oklch(0.51 0.012 95);
+
+  --accent: oklch(0.5 0.17 52);
+  --accent-strong: oklch(0.46 0.175 48);
+  --accent-foreground: oklch(0.99 0.004 85);
+  --danger: oklch(0.54 0.19 27);
+  --danger-foreground: oklch(0.995 0.004 85);
+  --success: oklch(0.5 0.14 150);
+  --success-foreground: oklch(0.995 0.004 85);
+  --warning: oklch(0.525 0.13 75);
+  --warning-foreground: oklch(0.995 0.004 85);
+
+  --avatar-fill-l: 0.82;
+  --avatar-fill-c: 0.09;
+  --avatar-ink-l: 0.3;
+  --avatar-ink-c: 0.07;
+
+  --sheet-gap: 8px;
+  --sheet-radius-side: var(--ui-radius-xl);
+  --sheet-radius-main: var(--ui-radius-xl);
+  --sheet-radius-members: var(--ui-radius-xl);
+  --sheet-border: 1px solid var(--border);
+  --sheet-shadow: 0 1px 2px rgb(40 40 20 / 0.05);
+  --chat-avatar: 40px;
+
+  --shadow-panel: 0 10px 30px rgb(40 40 20 / 0.14);
+  --scrim: oklch(0.2 0.02 60 / 0.5);
+}
+
+/* True black for OLED panels; the main column stays barely above black. */
+[data-preset="amoled"] {
+  color-scheme: dark;
+
+  --chrome: oklch(0 0 0);
+  --background: oklch(0.075 0.003 260);
+  --surface: oklch(0 0 0);
+  --surface-raised: oklch(0.11 0.004 260);
+  --surface-hover: oklch(0.145 0.005 260);
+  --surface-active: oklch(0.18 0.006 260);
+  --border: oklch(0.21 0.005 260);
+  --border-strong: oklch(0.47 0.008 260);
+  --foreground: oklch(0.97 0.002 260);
+  --muted-foreground: oklch(0.76 0.006 260);
+  --faint-foreground: oklch(0.63 0.008 260);
+
+  --accent: oklch(0.8 0.16 65);
+  --accent-strong: oklch(0.87 0.15 72);
+  --accent-foreground: oklch(0.16 0.03 60);
+  --danger: oklch(0.72 0.19 25);
+  --danger-foreground: oklch(0.15 0.02 25);
+  --success: oklch(0.78 0.16 155);
+  --success-foreground: oklch(0.15 0.02 155);
+  --warning: oklch(0.85 0.14 88);
+  --warning-foreground: oklch(0.15 0.02 85);
+
+  --avatar-fill-l: 0.36;
+  --avatar-fill-c: 0.06;
+  --avatar-ink-l: 0.92;
+  --avatar-ink-c: 0.03;
+
+  --shadow-panel: 0 16px 40px rgb(0 0 0 / 0.72);
+  --scrim: oklch(0 0 0 / 0.76);
+}
+
+/* Maximum legibility: bright text, strong borders, no subtle greys. */
+[data-preset="contrast"] {
+  color-scheme: dark;
+
+  --chrome: oklch(0.07 0 0);
+  --background: oklch(0.13 0 0);
+  --surface: oklch(0.1 0 0);
+  --surface-raised: oklch(0.19 0 0);
+  --surface-hover: oklch(0.23 0 0);
+  --surface-active: oklch(0.27 0 0);
+  --border: oklch(0.35 0 0);
+  --border-strong: oklch(0.62 0 0);
+  --foreground: oklch(1 0 0);
+  --muted-foreground: oklch(0.87 0 0);
+  --faint-foreground: oklch(0.73 0 0);
+
+  --accent: oklch(0.88 0.17 95);
+  --accent-strong: oklch(0.94 0.15 100);
+  --accent-foreground: oklch(0.12 0.02 95);
+  --danger: oklch(0.76 0.2 25);
+  --danger-foreground: oklch(0.1 0.01 25);
+  --success: oklch(0.84 0.16 150);
+  --success-foreground: oklch(0.1 0.01 150);
+  --warning: oklch(0.9 0.14 95);
+  --warning-foreground: oklch(0.1 0.01 95);
+
+  --avatar-fill-l: 0.3;
+  --avatar-fill-c: 0.05;
+  --avatar-ink-l: 0.97;
+  --avatar-ink-c: 0.02;
+
+  --sheet-border: 1px solid var(--border);
+  --shadow-panel: 0 12px 0 0 rgb(255 255 255 / 0.08);
+  --scrim: oklch(0 0 0 / 0.8);
+}
+
+/* --------------------------------------------------------------- accents --- */
+/* Dark presets first; the lighter variant follows `data-theme="light"`.
+ * Only three tokens change, so a preset keeps its surfaces and semantic set. */
+
+[data-accent="ember"] {
+  --accent: oklch(0.775 0.145 63);
+  --accent-strong: oklch(0.835 0.15 70);
+  --accent-foreground: oklch(0.225 0.035 63);
+}
+
+[data-accent="ice"] {
+  --accent: oklch(0.79 0.105 235);
+  --accent-strong: oklch(0.86 0.095 235);
+  --accent-foreground: oklch(0.195 0.03 235);
+}
+
+[data-accent="violet"] {
+  --accent: oklch(0.755 0.16 300);
+  --accent-strong: oklch(0.82 0.15 300);
+  --accent-foreground: oklch(0.19 0.04 300);
+}
+
+[data-accent="moss"] {
+  --accent: oklch(0.77 0.13 145);
+  --accent-strong: oklch(0.84 0.12 145);
+  --accent-foreground: oklch(0.19 0.03 145);
+}
+
+[data-accent="rose"] {
+  --accent: oklch(0.745 0.17 10);
+  --accent-strong: oklch(0.81 0.16 10);
+  --accent-foreground: oklch(0.2 0.035 10);
+}
+
+[data-accent="mono"] {
+  --accent: oklch(0.82 0.004 260);
+  --accent-strong: oklch(0.9 0.003 260);
+  --accent-foreground: oklch(0.2 0.002 260);
+}
+
+[data-theme="light"][data-accent="ember"] {
+  --accent: oklch(0.5 0.17 52);
+  --accent-strong: oklch(0.46 0.175 48);
+  --accent-foreground: oklch(0.99 0.004 85);
+}
+
+[data-theme="light"][data-accent="ice"] {
+  --accent: oklch(0.49 0.12 245);
+  --accent-strong: oklch(0.45 0.13 245);
+  --accent-foreground: oklch(0.99 0.004 245);
+}
+
+[data-theme="light"][data-accent="violet"] {
+  --accent: oklch(0.5 0.18 300);
+  --accent-strong: oklch(0.46 0.185 300);
+  --accent-foreground: oklch(0.99 0.004 300);
+}
+
+[data-theme="light"][data-accent="moss"] {
+  --accent: oklch(0.48 0.12 150);
+  --accent-strong: oklch(0.44 0.125 150);
+  --accent-foreground: oklch(0.99 0.004 150);
+}
+
+[data-theme="light"][data-accent="rose"] {
+  --accent: oklch(0.51 0.18 10);
+  --accent-strong: oklch(0.47 0.185 10);
+  --accent-foreground: oklch(0.99 0.004 10);
+}
+
+[data-theme="light"][data-accent="mono"] {
+  --accent: oklch(0.46 0.003 260);
+  --accent-strong: oklch(0.4 0.002 260);
+  --accent-foreground: oklch(0.99 0.002 260);
+}
+
+/* ------------------------------------------------------- shape and scale --- */
+
+[data-radius="sharp"] {
+  --ui-radius-xs: 2px;
+  --ui-radius-sm: 3px;
+  --ui-radius-md: 4px;
+  --ui-radius-lg: 6px;
+  --ui-radius-xl: 8px;
+}
+
+[data-radius="round"] {
+  --ui-radius-xs: 6px;
+  --ui-radius-sm: 8px;
+  --ui-radius-md: 10px;
+  --ui-radius-lg: 14px;
+  --ui-radius-xl: 20px;
+}
+
+[data-font-scale="112"] {
+  --ui-scale: 1.12;
+}
+
+[data-font-scale="125"] {
+  --ui-scale: 1.25;
+}
+
+[data-density="compact"] {
+  --row-height: 28px;
+}
+
+@theme inline {
+  --font-sans:
+    "Golos Text", system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+
+  --color-chrome: var(--chrome);
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-raised: var(--surface-raised);
+  --color-hover: var(--surface-hover);
+  --color-active: var(--surface-active);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted-foreground);
+  --color-faint: var(--faint-foreground);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-scrim: var(--scrim);
+
+  --radius-xs: var(--ui-radius-xs);
+  --radius-sm: var(--ui-radius-sm);
+  --radius-md: var(--ui-radius-md);
+  --radius-lg: var(--ui-radius-lg);
+  --radius-xl: var(--ui-radius-xl);
+
+  --shadow-panel: var(--shadow-panel);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    @apply bg-chrome text-foreground antialiased;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.45;
+    overflow: hidden;
+  }
+
+  /* Browser preview only: the desktop shell calls WebView2's native zoom.
+     The layout box is divided by the scale, otherwise zoom would overflow. */
+  html:not([data-native-scale="true"]) {
+    --fixed-scale: var(--ui-scale);
+  }
+
+  html:not([data-native-scale="true"]) body {
+    zoom: var(--fixed-scale);
+    width: calc(100% / var(--fixed-scale));
+    height: calc(100% / var(--fixed-scale));
+  }
+
+  button {
+    font: inherit;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  input,
+  textarea {
+    font: inherit;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  ::selection {
+    background: color-mix(in oklch, var(--accent) 40%, transparent);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border: 2px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--faint-foreground);
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  /* Dense grid: every list row is 28–32 px (design 5.4). */
+  .row-dense {
+    height: var(--row-height);
+    min-height: var(--row-height);
+  }
+
+  .hairline {
+    box-shadow: inset 0 1px 0 0 color-mix(in oklch, white 4%, transparent);
+  }
+
+  .surface-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+
+  /* Frame panels. Dark presets: flush sides, the main column one step up and
+     rounded on top. Light preset: sheets on the chrome (see the tokens). */
+  .sheet-row {
+    gap: var(--sheet-gap);
+    padding: 0 var(--sheet-gap) var(--sheet-gap);
+  }
+
+  .sheet {
+    border: var(--sheet-border);
+    box-shadow: var(--sheet-shadow);
+    overflow: hidden;
+  }
+
+  .sheet-side {
+    border-radius: var(--sheet-radius-side);
+  }
+
+  .sheet-main {
+    border-radius: var(--sheet-radius-main);
+  }
+
+  .sheet-members {
+    border-radius: var(--sheet-radius-members);
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@layer utilities {
+  .animate-fade-in {
+    animation: rostalk-fade-in 120ms ease-out both;
+  }
+
+  .animate-scale-in {
+    animation: rostalk-scale-in 120ms ease-out both;
+  }
+
+  .animate-slide-up {
+    animation: rostalk-slide-up 140ms ease-out both;
+  }
+
+  .speaking-bar {
+    transform-origin: center;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-fade-in,
+    .animate-scale-in,
+    .animate-slide-up {
+      animation: none;
+    }
+  }
+}
+
+@keyframes rostalk-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes rostalk-scale-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes rostalk-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

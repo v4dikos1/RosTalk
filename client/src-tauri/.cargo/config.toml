@@ -1,0 +1,9 @@
+# The prebuilt libwebrtc that `livekit` downloads for Windows is compiled with
+# the static MSVC runtime (/MT). Rust defaults to /MD, and the linker rejects a
+# mixed CRT (LNK2038). Upstream livekit/rust-sdks solves this the same way: the
+# whole client is built with the static CRT on Windows.
+#
+# This is not applied to Linux/macOS: the Tauri shell is shipped on Windows only
+# (design 1), and CI builds the portable core there.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

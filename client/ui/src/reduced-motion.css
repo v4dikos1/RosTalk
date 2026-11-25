@@ -1,0 +1,13 @@
+/* Users who ask for less motion get no spinning, pulsing or button press
+ * scaling. Kept outside index.css so the theme tokens stay untouched. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-spin,
+  .animate-pulse {
+    animation: none !important;
+  }
+
+  .active\:scale-\[0\.97\]:active,
+  .active\:scale-\[0\.98\]:active {
+    transform: none !important;
+  }
+}

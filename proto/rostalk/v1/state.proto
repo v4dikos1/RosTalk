@@ -1,0 +1,336 @@
+syntax = "proto3";
+
+// State snapshot and the value types it is built from.
+//
+// The whole server state is small (up to ~50 online users), so the server always
+// sends a full snapshot after a successful handshake or a reconnect instead of a
+// replayable event log (design 4.6).
+package rostalk.v1;
+
+import "rostalk/v1/chat.proto";
+
+option go_package = "github.com/v4dikos1/RosTalk/proto/gen/go/rostalk/v1;rostalkv1";
+
+// ServerSnapshot is the complete client-visible state of the server.
+message ServerSnapshot {
+  // Server identity and settings.
+  ServerInfo server = 1;
+
+  // All roles defined on the server, ordered by ascending position.
+  repeated Role roles = 2;
+
+  // Channel tree in no particular order: clients sort by parent_id, then
+  // position. Every channel the user may see is included.
+  repeated Channel channels = 3;
+
+  // Users that are currently online, including the caller.
+  repeated User users = 4;
+
+  // Effective permissions of the authenticated user.
+  MyPermissions permissions = 5;
+
+  // Unread and mention counters of the caller (stage 4.1).
+  UnreadState unread = 6;
+}
+
+// ServerInfo describes the server itself.
+message ServerInfo {
+  // Display name chosen by the administrator, e.g. "RosTalk".
+  string name = 1;
+
+  // rostalk-server build version, e.g. "0.1.0" (diagnostics only).
+  string version = 2;
+
+  // Wire protocol version spoken by the server, currently 1.
+  uint32 protocol_version = 3;
+
+  // Long-lived server identity: SHA-256 fingerprint of its Ed25519 identity
+  // key. Equal to Challenge.server_id; clients persist it and can warn when it
+  // changes for an already known server.
+  bytes id = 4;
+
+  // How new users are allowed in (invite by default, design 4.2).
+  LoginMode login_mode = 5;
+
+  // Maximum number of online users, 0 means unlimited.
+  uint32 max_users = 6;
+
+  // Number of users online right now, for display in the UI.
+  uint32 online_users = 7;
+
+  // True when a server password is set. The password itself never leaves the
+  // server; administrators use this to show "set" instead of an empty field.
+  bool password_set = 8;
+
+  // Largest file the server accepts as one chat attachment (stage P3). Always
+  // positive: the server replaces an unset setting with its default (25 MiB).
+  // The client checks this before uploading instead of hard-coding a limit.
+  uint64 max_attachment_bytes = 9;
+}
+
+// LoginMode is the server admission policy.
+enum LoginMode {
+  // Not set; clients must treat it as LOGIN_MODE_INVITE.
+  LOGIN_MODE_UNSPECIFIED = 0;
+  // A valid, unused invite token is required.
+  LOGIN_MODE_INVITE = 1;
+  // The server password (entered by the user) is required.
+  LOGIN_MODE_PASSWORD = 2;
+  // Anyone who knows the address may join.
+  LOGIN_MODE_OPEN = 3;
+}
+
+// Role is a named set of permissions. A user may hold several roles; effective
+// permissions are the union of their roles, modulated by channel overrides
+// (design 4.4).
+message Role {
+  // Stable role id, unique within the server.
+  uint64 id = 1;
+
+  // Display name, e.g. "Admin", "Moderator", "Member", "Guest".
+  string name = 2;
+
+  // Display colour as 0xRRGGBB, 0 when the client should use its default.
+  uint32 color = 3;
+
+  // Priority of the role; a higher value means a more powerful role. Used for
+  // the hierarchy rule "you may only act on users below your highest role".
+  int32 position = 4;
+
+  // Permissions granted by the role before channel overrides are applied.
+  PermissionSet permissions = 5;
+
+  // True for the roles the server creates on first start. Built-in roles
+  // cannot be deleted, so the server always has a predictable baseline.
+  bool builtin = 6;
+}
+
+// Channel is one node of the channel tree. Voice channels are the ones that map
+// to a media room in the media plane.
+message Channel {
+  // Stable channel id, unique within the server.
+  uint64 id = 1;
+
+  // Parent channel id for nesting, 0 for a top-level channel.
+  uint64 parent_id = 2;
+
+  // Sort order among siblings with the same parent_id; lower comes first.
+  int32 position = 3;
+
+  // Display name.
+  string name = 4;
+
+  // Optional topic shown in the channel header.
+  string topic = 5;
+
+  // Voice or text channel.
+  ChannelKind kind = 6;
+
+  // Maximum number of users in the channel, 0 for unlimited.
+  uint32 user_limit = 7;
+
+  // True when the channel has a password. The password itself never leaves the
+  // server; clients only learn whether one is required.
+  bool password_protected = 8;
+
+  // Voice quality profile applied to everyone in the channel.
+  VoiceProfile voice_profile = 9;
+
+  // True for channels that are removed automatically once empty (design 4.5).
+  bool temporary = 10;
+
+  // Number of users currently present in the channel.
+  uint32 user_count = 11;
+
+  // True for the server's idle channel (ADR 0009).
+  //
+  // The flag is the only source of that meaning: the server never looks at the
+  // channel name. While a user is present in such a channel the server forces
+  // self_muted on and issues voice tokens without the publish grant; leaving
+  // the channel restores the user's own microphone setting. Clients show the
+  // flag and must not offer to unmute while the user is in the channel.
+  bool afk = 12;
+}
+
+// ChannelKind distinguishes voice rooms from text channels.
+enum ChannelKind {
+  // Not set; clients must treat it as CHANNEL_KIND_VOICE.
+  CHANNEL_KIND_UNSPECIFIED = 0;
+  // Voice channel backed by a media room.
+  CHANNEL_KIND_VOICE = 1;
+  // Text channel (chat arrives in stage 4.1).
+  CHANNEL_KIND_TEXT = 2;
+}
+
+// VoiceProfile is the per-channel Opus/APM preset (design 5.2).
+enum VoiceProfile {
+  // Not set; clients must treat it as VOICE_PROFILE_VOICE.
+  VOICE_PROFILE_UNSPECIFIED = 0;
+  // Mono, ~48 kbit/s, full audio processing. Default.
+  VOICE_PROFILE_VOICE = 1;
+  // Mono, ~96 kbit/s, full audio processing.
+  VOICE_PROFILE_VOICE_HQ = 2;
+  // Stereo, ~192 kbit/s, processing disabled (music).
+  VOICE_PROFILE_MUSIC = 3;
+}
+
+// User is an online user as seen by other clients. Users that are offline are
+// not part of the snapshot.
+message User {
+  // Stable user id, derived from the public key by the server.
+  uint64 id = 1;
+
+  // Display name currently in use.
+  string nickname = 2;
+
+  // Roles held by the user. Clients resolve names and colours through the
+  // snapshot's roles list.
+  repeated uint64 role_ids = 3;
+
+  // Channel the user is in, 0 when connected but not in any channel.
+  uint64 channel_id = 4;
+
+  // Microphone, deafen and away flags.
+  VoiceState voice_state = 5;
+
+  // True while the user publishes a screen share.
+  bool streaming = 6;
+
+  // Unix timestamp in milliseconds when the user connected to this server.
+  int64 connected_at_unix_ms = 7;
+
+  // SHA-256 (lowercase hex) of the user's 256x256 avatar, empty when the user
+  // has none (stage P11). The bytes are served by GET /api/v1/avatars/{hash};
+  // clients cache them by this hash, which is content-addressed and immutable.
+  string avatar_hash = 8;
+
+  // Screen shares this user is watching, by streamer id (stage P12).
+  //
+  // The server keeps only ids of users who share the caller's voice channel and
+  // are publishing a screen share right now; anything else the client sends is
+  // dropped, so a request cannot race a stream that just ended. The list lives
+  // in memory only and is cleared when the viewer leaves the channel, when the
+  // stream stops, and when either session ends. Clients read it as the viewer
+  // list of the streamer and never write it for anyone but themselves.
+  repeated uint64 watching_user_ids = 9;
+}
+
+// VoiceState holds the flags shown next to a user. Speaking is not part of it:
+// the client measures audio levels itself and the control plane does not relay
+// them (design 4.6).
+message VoiceState {
+  // User muted their own microphone.
+  bool self_muted = 1;
+
+  // User deafened incoming audio for themselves.
+  bool self_deafened = 2;
+
+  // A moderator muted the user's microphone. The user cannot lift it.
+  bool server_muted = 3;
+
+  // A moderator deafened the user. The user cannot lift it.
+  bool server_deafened = 4;
+
+  // User is marked as away (AFK channel or manual).
+  bool away = 5;
+
+  // User speaks with priority, reducing others' volume.
+  bool priority_speaker = 6;
+}
+
+// Permission enumerates every right the server checks. Numeric values are part
+// of the wire contract and must never change meaning.
+enum Permission {
+  // Unknown or unset permission; never granted.
+  PERMISSION_UNSPECIFIED = 0;
+
+  // Server administration (design 4.4).
+  // Full control over the server; bypasses every other check.
+  PERMISSION_MANAGE_SERVER = 1;
+  // Create, edit, reorder and delete roles and their assignments.
+  PERMISSION_MANAGE_ROLES = 2;
+  // Create, edit, move and delete channels.
+  PERMISSION_MANAGE_CHANNELS = 3;
+  // Create and revoke invite links.
+  PERMISSION_MANAGE_INVITES = 4;
+  // Read the audit log.
+  PERMISSION_VIEW_AUDIT_LOG = 5;
+
+  // Moderation (design 4.4).
+  // Disconnect a user from the server.
+  PERMISSION_KICK = 6;
+  // Ban a user by key or address.
+  PERMISSION_BAN = 7;
+  // Move other users between channels.
+  PERMISSION_MOVE_MEMBERS = 8;
+  // Server-mute other users.
+  PERMISSION_MUTE_MEMBERS = 9;
+  // Server-deafen other users.
+  PERMISSION_DEAFEN_MEMBERS = 10;
+
+  // Per-channel voice rights.
+  // See the channel in the tree and its user list.
+  PERMISSION_VIEW_CHANNEL = 20;
+  // Enter the channel.
+  PERMISSION_JOIN_CHANNEL = 21;
+  // Publish microphone audio in the channel.
+  PERMISSION_SPEAK = 22;
+  // Use voice activation instead of push-to-talk.
+  PERMISSION_USE_VOICE_ACTIVATION = 23;
+  // Speak with priority speaker flag.
+  PERMISSION_PRIORITY_SPEAKER = 24;
+  // Join a channel above its user limit.
+  PERMISSION_BYPASS_USER_LIMIT = 25;
+  // Join a password protected channel without the password.
+  PERMISSION_BYPASS_CHANNEL_PASSWORD = 26;
+
+  // Per-channel screen sharing rights.
+  // Publish a screen share.
+  PERMISSION_STREAM = 30;
+  // Publish a high quality (above 1080p30) screen share.
+  PERMISSION_STREAM_HQ = 31;
+
+  // Miscellaneous rights.
+  // Create a temporary channel that disappears when empty.
+  PERMISSION_CREATE_TEMP_CHANNEL = 40;
+  // Change own nickname.
+  PERMISSION_CHANGE_NICKNAME = 41;
+
+  // Per-channel chat rights (stage 4.1).
+  // Post messages in a channel. Direct messages use the role union.
+  PERMISSION_SEND_MESSAGES = 50;
+  // Upload and attach files to messages.
+  PERMISSION_ATTACH_FILES = 51;
+  // Edit and delete channel messages of other users.
+  PERMISSION_MANAGE_MESSAGES = 52;
+}
+
+// PermissionSet is a set of granted permissions.
+message PermissionSet {
+  // Permissions the subject holds. Order is not significant; duplicates are
+  // not expected. PERMISSION_UNSPECIFIED is never present.
+  repeated Permission permissions = 1;
+}
+
+// ChannelPermissions is the caller's effective permission set in one channel.
+// The server has already applied the role union, channel denies and channel
+// allows; the client only uses the result to show or hide UI controls.
+message ChannelPermissions {
+  // Channel these permissions apply to.
+  uint64 channel_id = 1;
+
+  // Effective permissions in that channel.
+  PermissionSet effective = 2;
+}
+
+// MyPermissions is the caller's own permission view. It is advisory for the UI:
+// every request is checked again on the server.
+message MyPermissions {
+  // Permissions that apply server-wide (management and moderation rights).
+  PermissionSet server = 1;
+
+  // Effective permissions per channel. A channel missing from this list gives
+  // the user no channel-specific rights (and it is not shown at all when
+  // PERMISSION_VIEW_CHANNEL is absent).
+  repeated ChannelPermissions channels = 2;
+}

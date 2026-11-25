@@ -1,0 +1,36 @@
+{
+  "server": "wss://localhost:7443",
+  "room": "stream-spike-1795070973049",
+  "streamer": {
+    "displayMedia": true,
+    "secureContext": true,
+    "protocol": "http:",
+    "published": true,
+    "received": false,
+    "localStats": {
+      "codec": "video/H264",
+      "encoder": "OpenH264",
+      "bitrateKbps": 0,
+      "qualityLimitation": "none",
+      "powerEfficient": false
+    }
+  },
+  "viewer": {
+    "displayMedia": true,
+    "secureContext": true,
+    "protocol": "http:",
+    "published": false,
+    "received": true,
+    "sources": [
+      "screen_share"
+    ],
+    "remoteStats": {
+      "codec": "video/H264",
+      "width": 960,
+      "height": 540,
+      "fps": 20,
+      "bitrateKbps": 5395
+    }
+  },
+  "errors": []
+}

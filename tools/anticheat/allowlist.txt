@@ -1,0 +1,17 @@
+# Anti-cheat exceptions (stage 2.3.3).
+#
+# One exception per line, in the form
+#
+#     path:regexp # ADR NNNN
+#
+# `path` is a shell glob against the path reported by tools/anticheat/check.sh
+# (relative to the repository root). `regexp` is a POSIX extended regular
+# expression matched against the offending source line. The ADR note is
+# mandatory: an exception without a decision record is ignored, and check.sh
+# reports the hit as a violation.
+#
+# This file is expected to stay empty. A whole-line comment that names a
+# banned API is not a violation and needs no entry (see the header of
+# check.sh). Anything else means the client does something the white list in
+# docs/anticheat.md does not allow: write an ADR and ask a human
+# first — an exception is not a way to make the check green.

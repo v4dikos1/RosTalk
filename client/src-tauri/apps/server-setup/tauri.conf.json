@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "RosTalk Server Setup",
+  "version": "0.3.0",
+  "identifier": "dev.rostalk.server-setup",
+  "build": {
+    "beforeDevCommand": "npm run dev:server-setup",
+    "devUrl": "http://localhost:1421",
+    "beforeBuildCommand": "npm run build:server-setup",
+    "frontendDist": "../../../ui/dist-server-setup"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "url": "server-setup.html",
+        "title": "RosTalk Server Setup",
+        "width": 920,
+        "height": 720,
+        "minWidth": 760,
+        "minHeight": 560,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1421 http://localhost:1421; object-src 'none'; base-uri 'self'; form-action 'none'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "publisher": "RosTalk",
+    "copyright": "Copyright (c) 2026 RosTalk",
+    "shortDescription": "RosTalk server installer",
+    "icon": [
+      "../../icons/32x32.png",
+      "../../icons/128x128.png",
+      "../../icons/128x128@2x.png",
+      "../../icons/icon.icns",
+      "../../icons/icon.ico"
+    ]
+  }
+}

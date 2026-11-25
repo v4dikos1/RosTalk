@@ -1,0 +1,215 @@
+# RosTalk anti-cheat denylist (stage 2.3.3).
+#
+# One POSIX extended regular expression per line (`grep -E`); a line starting
+# with `#` is a comment. The rules come from the table "Запрещено всегда" in
+# docs/anticheat.md, section "Античит-гигиена", and are matched
+# against the client sources: client/src-tauri/**/*.rs|toml and
+# client/ui/src/** (see tools/anticheat/check.sh for the exact scope).
+#
+# Convention: a line that is a bare lowercase identifier (letters, digits, `_`
+# or `-` only, for example `rdev`) is used twice: as a source regex and as a
+# crate name checked against `cargo tree` for the Windows target. Every other
+# line is a source-only regex.
+#
+# Whole-line comments in the sources do not count as usage: a doc comment that
+# explains why `SetWindowsHookEx` is forbidden is not a hook. check.sh skips
+# lines that start with `//`, `/*` or `*/` (Rust/TypeScript) and `#` in TOML.
+#
+# Anything not covered here is not automatically allowed: the white list in the
+# plan is the ceiling (CONTRIBUTING.md, "Anti-cheat safety").
+
+# --- Чужие процессы: чтение и запись чужой памяти, потоки ---------------
+\bOpenProcess\b
+\bOpenThread\b
+\bReadProcessMemory\b
+\bWriteProcessMemory\b
+\bVirtualAllocEx\b
+\bVirtualProtectEx\b
+\bCreateRemoteThread(Ex)?\b
+\bNtCreateThreadEx\b
+\bQueueUserAPC\b
+\bSetThreadContext\b
+\bDuplicateHandle\b
+\bDebugActiveProcess(Stop)?\b
+\MiniDumpWriteDump\b
+\bNtQuerySystemInformation\b
+
+# --- Перечисление процессов ---------------------------------------------
+\bCreateToolhelp32Snapshot\b
+\bProcess32(First|Next)W?\b
+\b(Module32|Thread32)(First|Next)W?\b
+\bEnumProcesses\b
+\bEnumProcessModules(Ex)?\b
+\bWin32_Process\b
+
+# --- Хуки и инъекции ----------------------------------------------------
+\bSetWindowsHookEx[AW]?\b
+\bSetWinEventHook\b
+\bAppInit_DLLs\b
+Image File Execution Options
+\bWH_KEYBOARD_LL\b
+\bWH_MOUSE_LL\b
+
+# --- Синтетический и перехваченный ввод ---------------------------------
+\bSendInput\b
+\bkeybd_event\b
+\bmouse_event\b
+\bPostMessage[AW]?\b
+\bSendMessage[AW]?\b
+\bBlockInput\b
+\bClipCursor\b
+\bSetCursorPos\b
+\bGetAsyncKeyState\b
+\bGetKeyState\b
+# tao::set_focus synthesizes ALT via SendInput (2.3.3a). Use SetForegroundWindow
+# on our own HWND instead; a refused call just leaves the window unfocused.
+\.set_focus\(
+# Захват и подавление ввода хуже RIDEV_INPUTSINK | RIDEV_DEVNOTIFY (ADR 0012).
+\bRIDEV_NOLEGACY\b
+\bRIDEV_CAPTUREMOUSE\b
+\bRIDEV_NOHOTKEYS\b
+\bRIDEV_APPKEYS\b
+\bInterception\b
+\bvJoy\b
+\bViGEm\b
+
+# --- Чужие окна ---------------------------------------------------------
+\bFindWindow(Ex)?[AW]?\b
+\bEnumWindows\b
+\bGetWindowText[AW]?\b
+\bSetWindowPos\b
+\bSetParent\b
+\bSetWindowLong(Ptr)?[AW]?\b
+\bPrintWindow\b
+\bBitBlt\b
+\b(UIAutomation|IUIAutomation)[A-Za-z]*\b
+
+# --- Ядро и система -----------------------------------------------------
+\bSeDebugPrivilege\b
+\bSeLoadDriverPrivilege\b
+\bAdjustTokenPrivileges\b
+requireAdministrator
+\bbcdedit\b
+\btestsigning\b
+\.sys\b
+\bAdd-MpPreference\b
+\bnetsh[[:space:]]+advfirewall\b
+\bcertutil\b
+\bImport-PfxCertificate\b
+
+# --- Скрытность и обфускация -------------------------------------------
+\b(UPX|Themida|VMProtect)\b
+\bIsDebuggerPresent\b
+\bCheckRemoteDebuggerPresent\b
+\bNtSetInformationThread\b
+\bSetWindowDisplayAffinity\b
+\bPAGE_EXECUTE
+
+# --- Приоритеты ---------------------------------------------------------
+\bREALTIME_PRIORITY_CLASS\b
+\bSetPriorityClass\b
+\bSetProcessAffinityMask\b
+
+# --- Прямые syscall'ы и чужое адресное пространство ----------------------
+# A voice client has no reason to bypass the Win32 layer or to touch another
+# process. Every hit here is a red flag for Vanguard/EAC/BattlEye and needs an
+# ADR, a live G7 run and a human decision (CONTRIBUTING.md, "Anti-cheat safety").
+\bNt(Read|Write)VirtualMemory\b
+\bNt(Protect|Allocate)VirtualMemory(Ex)?\b
+\bNt(Open|QueryInformation)Process\b
+\bNt(Open|Suspend|Resume)Thread\b
+\bNt(Map|Unmap)ViewOfSection\b
+\bNtQueryObject\b
+\bRtlCreateUserThread\b
+\bWow64SetThreadContext\b
+\bSuspendThread\b
+\bResumeThread\b
+\bTerminateThread\b
+# Exact `VirtualProtect` only: VirtualProtectEx is already banned above.
+\bVirtualProtect\b
+
+# --- Токены, службы, драйверы и запуск процессов ------------------------
+\bOpenProcessToken\b
+\bDuplicateTokenEx\b
+\bImpersonateLoggedOnUser\b
+\bCreateProcess(AsUser|WithToken|WithLogon)?[AW]?\b
+\bShellExecute(Ex)?[AW]?\b
+\bWinExec\b
+\bCreateService[AW]?\b
+\bOpenSCManager[AW]?\b
+\bStartService[AW]?\b
+\bChangeServiceConfig[AW]?\b
+\bDeleteService\b
+\bNtLoadDriver\b
+\bDeviceIoControl\b
+
+# --- Чужие окна: активное окно и его процесс ----------------------------
+# Reading the foreground window or its PID is how "which game is running"
+# detection starts. Our own windows go through Tauri/tao APIs only.
+\bGetForegroundWindow\b
+\bGetWindowThreadProcessId\b
+\bEnumChildWindows\b
+\bGetWindowDC\b
+# Passive whole-keyboard state is a keylogger pattern when it is ours; the
+# allowed global path is Raw Input on a message-only window (ADR 0012).
+# (tao itself imports GetAsyncKeyState/GetKeyState for its own text input;
+# that is a third-party import, described in the 2026-11-22 audit instead of
+# being added to forbidden-imports.txt, which needs a baseline decision.)
+\bGetKeyboardState\b
+\bToUnicodeEx\b
+\bAttachThreadInput\b
+
+# --- Обновления и WebView2: опасные настройки ---------------------------
+# The release CSP must not allow eval (docs/anticheat.md); desktop capture
+# must go through getDisplayMedia with the system picker, not the legacy
+# Chrome bypass; the updater stays on HTTPS, requires a signed version and
+# never downgrades (ADR 0019, when 6.2 lands).
+unsafe-eval
+chromeMediaSource
+desktopCapturer
+disable-web-security
+allow-running-insecure-content
+ignore-certificate-errors
+dangerousInsecureTransportProtocol
+dangerousAcceptInvalidCerts
+allowDowngrades
+
+# --- Системные настройки через PowerShell --------------------------------
+# Same category as Add-MpPreference/netsh above: the client never changes
+# Defender, firewall or optional Windows features.
+\bSet-MpPreference\b
+\bNew-NetFirewallRule\b
+\bDisable-WindowsOptionalFeature\b
+\bUninstall-WindowsFeature\b
+
+# --- Фичи windows / windows-sys (только запрещённые) --------------------
+Win32_System_Diagnostics_Debug
+Win32_System_Diagnostics_ToolHelp
+Win32_System_ProcessStatus
+
+# --- Крейты (источник и cargo tree) -------------------------------------
+# Чужие процессы и перечисление.
+sysinfo
+process-memory
+read-process-memory
+dll-syringe
+# Хуки и инъекции.
+rdev
+willhook
+inputbot
+retour
+detour
+minhook
+ilhook
+# Синтетический ввод и ремап.
+enigo
+winput
+device_query
+autopilot
+vigem-client
+# Скрытность.
+obfstr
+litcrypt
+# Прямые NT-вызовы и исполнение кода в памяти.
+ntapi
+memexec

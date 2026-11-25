@@ -1,0 +1,31 @@
+version: "2"
+
+# Shared configuration for the server/ and tools/rostalkctl modules.
+# proto/gen/go is generated code: it is compiled and tested by `make check`, but
+# not linted.
+
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - gocritic
+    - misspell
+    - nolintlint
+    - unconvert
+    - unparam
+  exclusions:
+    # Generated files are reported only when they break compilation.
+    generated: strict
+    rules:
+      - path: _test\.go
+        linters:
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

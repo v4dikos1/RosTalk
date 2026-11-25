@@ -1,0 +1,32 @@
+[package]
+name = "rostalk-server-setup"
+version = "0.3.0"
+description = "RosTalk server installer for Windows: installs rostalk-server on a Linux VPS over SSH (P13, ADR 0026)"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "rostalk-server-setup"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7.6", features = [] }
+
+# Same versions as the desktop client (client/src-tauri/Cargo.toml): one
+# Tauri, one specta and one WebView2 binding in the workspace lockfile.
+[dependencies]
+tauri = { version = "2.12.7", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "=0.4.35"
+specta = { version = "=2.0.0-rc.28", features = ["derive"] }
+specta-typescript = "0.0.15"
+tauri-specta = { version = "=2.0.0-rc.29", features = ["derive", "typescript"] }
+rostalk-hosting = { path = "../../crates/hosting" }
+rostalk-platform = { path = "../../crates/platform" }
+# Native file dialog for the SSH key; the WebView only receives the path.
+rfd = "0.18.0"
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "=0.39.1"

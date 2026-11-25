@@ -1,0 +1,68 @@
+[package]
+name = "rostalk-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "RosTalk client core: control-plane connection, state store and IPC types"
+
+[dependencies]
+# Generated prost code (proto/gen) needs the prost runtime. Pinned in Cargo.lock.
+prost = "0.14"
+rostalk-platform = { path = "../platform" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+specta = { version = "=2.0.0-rc.28", features = ["derive"] }
+
+# Async connection worker (tokio) and a WebSocket over rustls. Versions are
+# pinned because the TLS verifier API is part of this stage's security work.
+tokio = { version = "1.54.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "net",
+] }
+tokio-tungstenite = { version = "0.26.2", default-features = false, features = [
+    "connect",
+    "handshake",
+] }
+# TLS is built here, not by tokio-tungstenite: the leaf fingerprint verifier and
+# the Web PKI path share one rustls configuration (ADR 0001).
+tokio-rustls = { version = "0.26.4", default-features = false, features = [
+    "ring",
+    "tls12",
+    "logging",
+] }
+rustls = { version = "0.23.46", default-features = false, features = [
+    "std",
+    "ring",
+    "tls12",
+    "logging",
+] }
+rustls-pki-types = "1.16.0"
+webpki-roots = "1.0.12"
+rustls-native-certs = "0.8.5"
+x509-parser = "0.18.1"
+futures-util = { version = "0.3.31", features = ["sink"] }
+
+# Loopback HTTP proxy for chat history, uploads and attachment reads (stage
+# 4.1). The WebView cannot present the pinned self-signed certificate, so the
+# core terminates HTTP on 127.0.0.1 and forwards over its own pinned TLS.
+hyper = { version = "1.6.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.10", features = ["tokio"] }
+http-body-util = "0.1.2"
+getrandom = "0.3.4"
+
+sha2 = "0.10.9"
+hex = "0.4.3"
+url = "2.5.8"
+bytes = "1.11.0"
+log = "0.4.35"
+parking_lot = "0.12.5"
+
+[dev-dependencies]
+tempfile = "3.23.0"
+tokio = { version = "1.54.1", features = ["full"] }
+# Generates a CA certificate for the "CA used as leaf" rejection test.
+rcgen = "0.14.10"

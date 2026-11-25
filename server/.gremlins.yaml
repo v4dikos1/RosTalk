@@ -1,0 +1,46 @@
+# Gremlins configuration for the RosTalk server (docs/TEST-QUALITY.md).
+#
+# Scope is passed on the command line, one package per run, because the server
+# module is far too large for a single mutation run:
+#
+#   gremlins unleash ./internal/perms
+#   gremlins unleash ./internal/roles
+#
+# Thresholds stay at 0 on purpose: the mutation score is a quality signal, not a
+# build gate. `make check` never calls gremlins.
+
+unleash:
+  # 12 logical cores would start 12 `go test` processes, each of which compiles
+  # and runs the package; 4 keeps the machine usable and the timings honest.
+  workers: 4
+  # A mutation that makes a test take more than 5x its baseline is a hang.
+  timeout-coefficient: 5
+  threshold:
+    efficacy: 0
+    mutant-coverage: 0
+
+# Default set of Go mutators (gremlins 0.6). Kept explicit so a future default
+# change does not silently alter the numbers in docs/TEST-QUALITY.md.
+mutants:
+  arithmetic-base:
+    enabled: true
+  conditionals-boundary:
+    enabled: true
+  conditionals-negation:
+    enabled: true
+  increment-decrement:
+    enabled: true
+  invert-negatives:
+    enabled: true
+  invert-logical:
+    enabled: false
+  invert-loopctrl:
+    enabled: false
+  invert-bitwise:
+    enabled: false
+  invert-assignments:
+    enabled: false
+  invert-bwassign:
+    enabled: false
+  remove-self-assignments:
+    enabled: false

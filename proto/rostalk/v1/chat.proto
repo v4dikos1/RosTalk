@@ -1,0 +1,203 @@
+syntax = "proto3";
+
+// Chat: channel messages, direct messages and attachments (stage 4.1).
+//
+// A conversation is either a channel (channel_id != 0, recipient_id == 0) or a
+// direct message between two users (channel_id == 0, recipient_id != 0). The
+// server always fills recipient_id with the *other* participant of the direct
+// message, so both sides see an unambiguous pair.
+//
+// History is requested by an opaque cursor: clients must not interpret it, and
+// a cursor from a different conversation is rejected. Pages are returned
+// oldest-to-newest with a cursor for the next (older) page.
+package rostalk.v1;
+
+option go_package = "github.com/v4dikos1/RosTalk/proto/gen/go/rostalk/v1;rostalkv1";
+
+// ChatTarget selects a channel or a direct-message peer.
+message ChatTarget {
+  // Exactly one target is set.
+  oneof target {
+    // Channel conversation. Requires PERMISSION_VIEW_CHANNEL.
+    uint64 channel_id = 1;
+    // Direct conversation with this user. The caller must be one of its two
+    // participants.
+    uint64 peer_user_id = 2;
+  }
+}
+
+// Message is one chat message as sent to a client.
+message Message {
+  // Stable message id, unique within the server and strictly increasing.
+  uint64 id = 1;
+
+  // Channel conversation, 0 for a direct message.
+  uint64 channel_id = 2;
+
+  // Author of the message.
+  uint64 sender_id = 3;
+
+  // The other participant of a direct message, 0 for a channel message. This
+  // is the actual recipient; each client derives the conversation peer as
+  // `sender_id` for an incoming message and `recipient_id` for its own.
+  uint64 recipient_id = 4;
+
+  // Author nickname at the time the message was sent, for rendering without
+  // the online user list.
+  string sender_nickname = 5;
+
+  // Plain text body. Clients render a safe subset of markup; HTML is never
+  // interpreted. Empty is allowed only when the message has attachments.
+  string body = 6;
+
+  // Unix timestamp in milliseconds when the message was created.
+  int64 created_at_unix_ms = 7;
+
+  // Unix timestamp in milliseconds of the last edit, 0 when never edited.
+  int64 edited_at_unix_ms = 8;
+
+  // Attachments claimed by this message, in send order.
+  repeated Attachment attachments = 9;
+
+  // Users mentioned with "@nickname" in the body. The server resolves them
+  // when the message is sent; clients use the list for highlighting and
+  // unread mention counters.
+  repeated uint64 mention_user_ids = 10;
+}
+
+// Attachment is one uploaded file. The server determines the content type
+// from the bytes, never from the file name or the extension.
+message Attachment {
+  // Stable attachment id, used in the HTTP path /api/v1/chat/attachments/{id}.
+  uint64 id = 1;
+
+  // Display file name chosen by the uploader. Never used as a path.
+  string file_name = 2;
+
+  // Safe content type detected by the server.
+  string content_type = 3;
+
+  // Size in bytes.
+  uint64 size_bytes = 4;
+
+  // Pixel dimensions for PNG, JPEG and GIF images, 0 otherwise.
+  uint32 width = 5;
+  uint32 height = 6;
+
+  // True for raster images the client may preview inline. SVG and HTML are
+  // never attachments of this kind.
+  bool image = 7;
+}
+
+// ChatSend creates a channel message or a direct message.
+//
+// The reply is a Message frame carrying the stored message, and every
+// recipient (the sender included) receives a MessageCreated event.
+//
+// Requires PERMISSION_SEND_MESSAGES in the channel, or the role union for a
+// direct message, and PERMISSION_ATTACH_FILES when attachment_ids is non-empty.
+message ChatSend {
+  // Conversation to post into.
+  ChatTarget target = 1;
+
+  // Plain text body, at most 4000 Unicode characters.
+  string body = 2;
+
+  // Ids returned by POST /api/v1/chat/attachments. Each attachment must be
+  // owned by the caller, unclaimed and uploaded recently.
+  repeated uint64 attachment_ids = 3;
+}
+
+// EditMessage replaces the body of an own message. Moderators with
+// PERMISSION_MANAGE_MESSAGES may edit any channel message. Direct messages can
+// only be edited by their author.
+//
+// The reply is a Message frame, and every recipient receives MessageUpdated.
+message EditMessage {
+  // Message to edit.
+  uint64 message_id = 1;
+
+  // New plain text body; must not be empty.
+  string body = 2;
+}
+
+// DeleteMessage removes a message and its attachments. The author may delete
+// an own message; PERMISSION_MANAGE_MESSAGES allows deleting channel messages
+// of others. Direct messages can only be deleted by their author.
+//
+// The reply is an Ack, and every recipient receives MessageDeleted.
+message DeleteMessage {
+  // Message to delete.
+  uint64 message_id = 1;
+}
+
+// ChatHistoryRequest asks for one page of older messages.
+//
+// The reply is a ChatHistoryPage. Cursors are opaque; an empty cursor starts
+// at the newest message.
+message ChatHistoryRequest {
+  // Conversation to read.
+  ChatTarget target = 1;
+
+  // Opaque cursor from a previous page, empty for the newest page.
+  string cursor = 2;
+
+  // Maximum number of messages in the page, 1..100. 0 means the server
+  // default of 50.
+  uint32 limit = 3;
+}
+
+// ChatHistoryPage is one page of history, oldest message first.
+message ChatHistoryPage {
+  // Messages in ascending id order.
+  repeated Message messages = 1;
+
+  // Cursor for the next (older) page, empty when there is nothing older.
+  string next_cursor = 2;
+
+  // True when older messages exist beyond this page.
+  bool has_more = 3;
+}
+
+// MarkRead advances the read marker of a conversation.
+//
+// up_to_message_id = 0 marks everything currently visible as read. The reply
+// is an Ack and the caller receives an UnreadUpdated event.
+message MarkRead {
+  // Conversation to mark.
+  ChatTarget target = 1;
+
+  // Highest message id that was read, 0 for "everything so far".
+  uint64 up_to_message_id = 2;
+}
+
+// UnreadCounter is the unread state of one conversation for one user.
+message UnreadCounter {
+  // Channel conversation, 0 for a direct message.
+  uint64 channel_id = 1;
+
+  // The other participant of a direct conversation, 0 for a channel.
+  uint64 peer_user_id = 2;
+
+  // Messages newer than the read marker that were not written by the user.
+  uint32 unread = 3;
+
+  // The unread messages that mention the user.
+  uint32 mentions = 4;
+
+  // Highest message id marked as read, 0 when never read.
+  uint64 last_read_message_id = 5;
+
+  // Nickname of the direct-message peer as stored on the server. Empty for a
+  // channel, so an offline peer can still be listed in the UI.
+  string peer_nickname = 6;
+
+  // Newest message id in the conversation, 0 when it has no messages.
+  uint64 last_message_id = 7;
+}
+
+// UnreadState is the complete unread view sent in the snapshot.
+message UnreadState {
+  // One entry per conversation with a read marker or unread messages.
+  repeated UnreadCounter conversations = 1;
+}

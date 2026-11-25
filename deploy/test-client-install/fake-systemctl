@@ -1,0 +1,101 @@
+#!/bin/sh
+# Minimal systemctl for the client-installer integration container.
+#
+# The container has no PID 1 systemd, and install.sh correctly refuses to run
+# its service step without one. This shim implements only the calls install.sh
+# and the client's rollback make: is-active, daemon-reload, enable --now,
+# start, restart and stop. It reads ExecStart from the unit and starts the
+# server in the background, which is enough to exercise the real binary,
+# healthcheck and invite commands.
+
+set -eu
+
+unit=/etc/systemd/system/rostalk-server.service
+pid_file=/run/rostalk.pid
+log=/var/log/rostalk.log
+
+running() {
+	[ -f "$pid_file" ] || return 1
+	pid=$(cat "$pid_file" 2>/dev/null || true)
+	[ -n "$pid" ] || return 1
+	kill -0 "$pid" 2>/dev/null
+}
+
+stop_service() {
+	if running; then
+		kill "$(cat "$pid_file")" 2>/dev/null || true
+	fi
+	# The fake unit starts the server through a shell; kill any leftover
+	# server as well so a restart cannot race the old media ports.
+	pkill -f '/usr/local/bin/rostalk-server run' 2>/dev/null || true
+	i=0
+	while running && [ $i -lt 20 ]; do
+		i=$((i + 1))
+		sleep 0.2
+	done
+	rm -f "$pid_file"
+}
+
+start_service() {
+	[ -f "$unit" ] || {
+		echo "no $unit" >&2
+		exit 5
+	}
+	stop_service
+	exec_line=$(sed -n 's/^ExecStart=//p' "$unit" | head -n 1)
+	[ -n "$exec_line" ] || {
+		echo "no ExecStart in $unit" >&2
+		exit 5
+	}
+	nohup sh -c "exec $exec_line" >>"$log" 2>&1 &
+	echo $! >"$pid_file"
+	# install.sh immediately probes /healthz and retries, so a small delay is
+	# enough for the harness; the real server reports when it is ready.
+	sleep 1
+}
+
+command=${1:-}
+shift || true
+
+case "$command" in
+--version)
+	echo "systemd 255 (client-install harness)"
+	;;
+daemon-reload)
+	;;
+is-active)
+	# `is-active --quiet rostalk-server`
+	for arg in "$@"; do
+		[ "$arg" = "rostalk-server" ] || continue
+		if running; then
+			[ "${1:-}" = "--quiet" ] || echo active
+			exit 0
+		fi
+		[ "${1:-}" = "--quiet" ] || echo inactive
+		exit 3
+	done
+	exit 3
+	;;
+enable | start | restart)
+	if [ "$command" = "enable" ] && [ "${1:-}" = "--now" ]; then
+		shift
+	fi
+	case "${1:-}" in
+	rostalk-server) start_service ;;
+	*) ;;
+	esac
+	;;
+stop)
+	case "${1:-}" in
+	rostalk-server) stop_service ;;
+	*) ;;
+	esac
+	;;
+status)
+	echo "rostalk-server.service - RosTalk voice server (harness)"
+	running && echo "   Active: active (running)" || echo "   Active: inactive (dead)"
+	;;
+*)
+	# Unknown calls are ignored: the harness only needs the service lifecycle.
+	;;
+esac

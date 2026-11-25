@@ -1,0 +1,57 @@
+name: rostalk-perf
+
+# Local Linux measurement stand for stage 7.1.
+#
+#   docker compose -f deploy/perf/compose.yaml up -d --build
+#   sh deploy/perf/run.sh baseline
+#   docker compose -f deploy/perf/compose.yaml down -v
+#
+# Fixed addresses so the media candidates are predictable (ADR 0001): the
+# server announces 172.28.10.10, the load generator talks to it from
+# 172.28.10.20. Nothing is published to the host, so a Windows machine without
+# Docker Desktop port forwarding still works. tc/iptables run in the client
+# container, never on the host and never on the production VPS.
+
+services:
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy/dev/Dockerfile
+      args:
+        VERSION: ${ROSTALK_VERSION:-perf}
+        COMMIT: ${ROSTALK_COMMIT:-unknown}
+        BUILT_AT: ${ROSTALK_BUILT_AT:-unknown}
+    image: rostalk-server:perf
+    command:
+      - run
+      - --data=/data
+      - --listen=:7443
+      - --public-host=172.28.10.10:7443
+      - --advertise-ip=172.28.10.10
+      - --enable-loopback-candidate=false
+      - --metrics-addr=127.0.0.1:9090
+    networks:
+      perf:
+        ipv4_address: 172.28.10.10
+
+  client:
+    build:
+      context: ../..
+      dockerfile: deploy/perf/Dockerfile
+    image: rostalk-load:perf
+    depends_on:
+      - server
+    # tc netem and iptables need NET_ADMIN inside this throwaway container.
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
+    networks:
+      perf:
+        ipv4_address: 172.28.10.20
+
+networks:
+  perf:
+    ipam:
+      config:
+        - subnet: 172.28.10.0/24

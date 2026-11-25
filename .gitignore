@@ -1,0 +1,43 @@
+# Build artifacts
+bin/
+dist/
+*.exe
+*.test
+*.out
+data/
+spikes/**/data/
+spikes/**/out/
+spikes/**/node_modules/
+spikes/**/target/
+spikes/**/dist/
+spikes/**/test-results/
+spikes/**/src-tauri/target/
+spikes/stream-webview/src-tauri/gen/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# Client build artifacts
+client/ui/node_modules/
+client/ui/dist/
+client/ui/dist-server-setup/
+client/ui/coverage/
+client/ui/test-results/
+client/ui/playwright-report/
+# StrykerJS sandbox and reports (docs/TEST-QUALITY.md)
+client/ui/.stryker-tmp/
+client/ui/reports/
+# Mutation reports (docs/TEST-QUALITY.md)
+server/mutants-*.json
+client/src-tauri/target/
+client/src-tauri/gen/
+client/src-tauri/apps/server-setup/gen/
+client/src-tauri/resources/server/
+
+# Local env
+.env
+.env.local

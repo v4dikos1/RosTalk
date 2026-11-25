@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/v4dikos1/RosTalk/security/advisories/new
+    about: Report vulnerabilities privately, not in a public issue.

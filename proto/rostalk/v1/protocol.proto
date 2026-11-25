@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+// Package rostalk.v1 is the wire contract between the RosTalk client and the
+// rostalk-server control plane. It is transported as length-delimited binary
+// frames over a single TLS WebSocket (wss://<host>:7443/ws).
+//
+// Versioning rules (see CONTRIBUTING.md):
+//   * The current protocol version is 1. Hello.protocol_version carries it.
+//   * Adding a message, an enum value or a field with a fresh tag is backward
+//     compatible and does not bump the version.
+//   * Renaming or removing a field, changing its type or its meaning is a
+//     breaking change: it needs rostalk.v2 and a new package directory.
+//
+// Framing: every WebSocket binary message is exactly one ClientFrame or one
+// ServerFrame. Requests carry a non-zero request_id; the server answers with a
+// ServerFrame whose reply_to repeats that id. Server-initiated frames (events,
+// errors) use reply_to = 0.
+package rostalk.v1;
+
+import "rostalk/v1/admin.proto";
+import "rostalk/v1/channels.proto";
+import "rostalk/v1/chat.proto";
+import "rostalk/v1/error.proto";
+import "rostalk/v1/events.proto";
+import "rostalk/v1/handshake.proto";
+
+option go_package = "github.com/v4dikos1/RosTalk/proto/gen/go/rostalk/v1;rostalkv1";
+
+// ClientFrame is a single message sent by the client to the server.
+message ClientFrame {
+  // Client-generated correlation id of the request. Must be strictly
+  // increasing within a connection and must not be zero. The matching
+  // ServerFrame carries it back in reply_to.
+  uint64 request_id = 1;
+
+  // Request payload. Exactly one variant is set; an empty frame is a protocol
+  // violation and the server closes the connection with ERROR_CODE_INVALID_FRAME.
+  oneof payload {
+    // First frame of the handshake. Must be the very first frame sent.
+    Hello hello = 10;
+    // Second frame of the handshake: proof of possession of the private key.
+    Authenticate authenticate = 11;
+    // Enter a voice channel (or move between channels).
+    JoinChannel join_channel = 20;
+    // Leave the current channel without disconnecting from the server.
+    LeaveChannel leave_channel = 21;
+    // Change own microphone, deafen or away flags.
+    SetVoiceState set_voice_state = 22;
+    // Change own display name.
+    SetNickname set_nickname = 23;
+    // Replace the set of screen shares the caller watches (stage P12).
+    SetWatching set_watching = 24;
+    // Ask for media-plane credentials for a channel (voice or screen share).
+    RequestMediaCredentials request_media_credentials = 30;
+    // Post a message into a channel or a direct conversation (stage 4.1).
+    ChatSend chat_send = 40;
+    // Replace the body of an own (or, with manage_messages, any channel) message.
+    EditMessage edit_message = 41;
+    // Remove a message and its attachments.
+    DeleteMessage delete_message = 42;
+    // Read one page of older history.
+    ChatHistoryRequest chat_history = 43;
+    // Advance the read marker of a conversation.
+    MarkRead mark_read = 44;
+    // Administrative action: roles, overrides, invites, settings, moderation.
+    AdminAction admin_action = 50;
+  }
+}
+
+// ServerFrame is a single message sent by the server to the client. It is
+// either the reply to a ClientFrame or an unsolicited event.
+message ServerFrame {
+  // request_id of the ClientFrame this frame answers, or 0 for server-initiated
+  // frames such as events.
+  uint64 reply_to = 1;
+
+  // Frame payload. Exactly one variant is set.
+  oneof payload {
+    // Request failed. Present only in replies (reply_to != 0).
+    // The server never mixes an error with a successful payload.
+    Error error = 2;
+    // Request succeeded and has no data to return (LeaveChannel,
+    // SetVoiceState). Present only in replies (reply_to != 0).
+    Ack ack = 3;
+    // Handshake step 2: challenge to sign. Sent in reply to Hello.
+    Challenge challenge = 10;
+    // Handshake step 4: authentication accepted, full state snapshot.
+    Welcome welcome = 11;
+    // Reply to JoinChannel or RequestMediaCredentials.
+    MediaCredentials media_credentials = 20;
+    // Successful reply to AdminAction.
+    AdminResult admin_result = 21;
+    // Stored message, in reply to ChatSend or EditMessage.
+    Message message = 22;
+    // Page of history, in reply to ChatHistoryRequest.
+    ChatHistoryPage chat_history = 23;
+    // Unsolicited state change (reply_to = 0).
+    Event event = 100;
+  }
+}
+
+// Ack confirms a request that carries no data in its answer.
+message Ack {
+  // Intentionally empty.
+}

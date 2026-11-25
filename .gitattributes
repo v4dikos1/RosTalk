@@ -1,0 +1,16 @@
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+
+# Generated protocol bindings: reviewed as part of the .proto change, not line
+# by line in the PR diff.
+proto/gen/** linguist-generated=true
+client/ui/src/proto/** linguist-generated=true
+client/src-tauri/crates/core/src/proto/rostalk.v1.rs linguist-generated=true
+
+# IPC bindings written by tauri-specta (`make gen-ipc`): generated, and the
+# generator leaves trailing spaces after union members.
+client/ui/src/core/tauri/bindings.ts linguist-generated=true -whitespace
+client/ui/src/server-setup/bindings.ts linguist-generated=true -whitespace

@@ -1,0 +1,9 @@
+Port 22
+ListenAddress 0.0.0.0
+PermitRootLogin yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+PubkeyAuthentication yes
+UsePAM yes
+AllowUsers root rostalktest
+Subsystem sftp internal-sftp

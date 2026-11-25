@@ -1,0 +1,40 @@
+[package]
+name = "rostalk-hosting"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Server installation over SSH for the RosTalk desktop client (stage 6.1a, ADR 0021)"
+
+[dependencies]
+# Pure-Rust SSH client. `ring` is the crypto backend because it is already in
+# the client tree; `aws-lc-rs` would pull CMake/NASM into the Windows build.
+# Version pinned: the handler/auth API is part of this stage's security work.
+russh = { version = "=0.65.2", default-features = false, features = ["ring", "rsa"] }
+tokio = { version = "1.54.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "net",
+    "io-util",
+] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10.9"
+hex = "0.4.3"
+base64 = "0.22.1"
+# Ed25519 verification of SHA256SUMS. The same ring version rustls already uses.
+ring = "0.17.14"
+zeroize = { version = "1.9.2", features = ["derive"] }
+# Tar stream in an exec channel; no SFTP (ADR 0021).
+tar = "=0.4.45"
+flate2 = "1.1.11"
+log = "0.4.35"
+thiserror = "=2.0.21"
+
+[dev-dependencies]
+tempfile = "3.23.0"
+tokio = { version = "1.54.1", features = ["full"] }
+rostalk-core = { path = "../core" }
+rostalk-platform = { path = "../platform" }

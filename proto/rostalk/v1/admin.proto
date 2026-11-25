@@ -1,0 +1,658 @@
+syntax = "proto3";
+
+// Administration: roles, channel overrides, invites, server settings,
+// moderation and the audit log (design 4.4). Every request is checked on the
+// server; the client only hides controls it may not use.
+//
+// All messages here are additive to protocol version 1: they use new fields
+// and new oneof variants, so older clients that never send AdminAction keep
+// working unchanged.
+package rostalk.v1;
+
+import "rostalk/v1/state.proto";
+
+option go_package = "github.com/v4dikos1/RosTalk/proto/gen/go/rostalk/v1;rostalkv1";
+
+// AdminAction is one administrative request. Exactly one variant is set.
+message AdminAction {
+  // The change to perform.
+  oneof action {
+    RoleCreate role_create = 1;
+    RoleUpdate role_update = 2;
+    RoleDelete role_delete = 3;
+    RoleReorder role_reorder = 4;
+    RoleAssign role_assign = 5;
+    RoleUnassign role_unassign = 6;
+
+    ChannelOverrideSet channel_override_set = 10;
+    ChannelOverrideClear channel_override_clear = 11;
+
+    ChannelCreate channel_create = 60;
+    ChannelUpdate channel_update = 61;
+    ChannelDelete channel_delete = 62;
+    ChannelMove channel_move = 63;
+    ChannelOverrideListQuery channel_override_list = 64;
+
+    ApiTokenCreate api_token_create = 70;
+    ApiTokenListQuery api_token_list = 71;
+    ApiTokenRevoke api_token_revoke = 72;
+
+    InviteCreate invite_create = 20;
+    InviteRevoke invite_revoke = 21;
+    InviteListQuery invite_list = 22;
+
+    ServerSettingsSet server_settings_set = 30;
+
+    MemberKick member_kick = 40;
+    MemberBan member_ban = 41;
+    MemberUnban member_unban = 42;
+    MemberMove member_move = 43;
+    MemberSetMuted member_set_muted = 44;
+    MemberSetDeafened member_set_deafened = 45;
+    MemberStopStream member_stop_stream = 46;
+    MemberListQuery member_list = 47;
+    BanListQuery ban_list = 48;
+
+    AuditList audit_list = 50;
+  }
+}
+
+// AdminResult is the successful reply to an AdminAction. The variant depends on
+// the request; mutations without data set ok = true.
+message AdminResult {
+  // Result payload.
+  oneof result {
+    // The request succeeded and has no data to return.
+    bool ok = 1;
+    Role role = 2;
+    RoleList roles = 3;
+    ChannelOverride override = 4;
+    Invite invite = 5;
+    InviteList invites = 6;
+    ServerInfo server = 7;
+    AuditPage audit = 8;
+    UserList users = 9;
+    Channel channel = 10;
+    ChannelList channels = 11;
+    BanList bans = 12;
+    ApiToken api_token = 13;
+    ApiTokenList api_tokens = 14;
+    ChannelOverrideList overrides = 15;
+  }
+}
+
+// RoleCreate adds a role. Requires PERMISSION_MANAGE_ROLES and a position below
+// the caller's highest role (PERMISSION_MANAGE_SERVER bypasses both).
+message RoleCreate {
+  // Display name; unique on the server.
+  string name = 1;
+
+  // Display colour as 0xRRGGBB, 0 for the client default.
+  uint32 color = 2;
+
+  // Position; a higher value is a more powerful role. Must stay below the
+  // caller's highest position unless the caller manages the server.
+  optional int32 position = 3;
+
+  // Permissions granted by the role.
+  PermissionSet permissions = 4;
+}
+
+// RoleUpdate changes a role. Unset fields keep their current value.
+message RoleUpdate {
+  // Role to change.
+  uint64 role_id = 1;
+
+  // New display name.
+  optional string name = 2;
+
+  // New display colour.
+  optional uint32 color = 3;
+
+  // New position.
+  optional int32 position = 4;
+
+  // When set, replaces the whole permission set of the role.
+  optional PermissionSet permissions = 5;
+}
+
+// RoleDelete removes a role. Built-in roles cannot be deleted.
+message RoleDelete {
+  // Role to remove.
+  uint64 role_id = 1;
+}
+
+// RoleReorder replaces the order of every role. The first id becomes the least
+// powerful role, the last one the most powerful. The caller must be allowed to
+// manage every listed role.
+message RoleReorder {
+  // All role ids in ascending power order.
+  repeated uint64 role_ids = 1;
+}
+
+// RoleAssign grants a role to a user.
+message RoleAssign {
+  // User who receives the role.
+  uint64 user_id = 1;
+
+  // Role to grant.
+  uint64 role_id = 2;
+}
+
+// RoleUnassign removes a role from a user.
+message RoleUnassign {
+  // User who loses the role.
+  uint64 user_id = 1;
+
+  // Role to remove.
+  uint64 role_id = 2;
+}
+
+// ChannelOverrideSet replaces the allow and deny sets of one role in one
+// channel. Requires PERMISSION_MANAGE_ROLES (or PERMISSION_MANAGE_CHANNELS for
+// channel administrators); PERMISSION_MANAGE_SERVER bypasses the check.
+message ChannelOverrideSet {
+  // Channel the override applies to.
+  uint64 channel_id = 1;
+
+  // Role the override applies to.
+  uint64 role_id = 2;
+
+  // Permissions granted in this channel, applied after denies.
+  PermissionSet allow = 3;
+
+  // Permissions removed in this channel, applied after the role union.
+  PermissionSet deny = 4;
+}
+
+// ChannelOverrideClear removes the override of one role, or of every role when
+// role_id is 0.
+message ChannelOverrideClear {
+  // Channel to clear.
+  uint64 channel_id = 1;
+
+  // Role whose override is removed; 0 removes all overrides of the channel.
+  uint64 role_id = 2;
+}
+
+// ChannelCreate adds a channel. Requires PERMISSION_MANAGE_CHANNELS;
+// PERMISSION_MANAGE_SERVER bypasses the check.
+message ChannelCreate {
+  // Parent channel; 0 creates a top-level channel.
+  uint64 parent_id = 1;
+
+  // Display name.
+  string name = 2;
+
+  // Optional topic.
+  string topic = 3;
+
+  // Voice or text channel.
+  ChannelKind kind = 4;
+
+  // Maximum number of users, 0 for unlimited.
+  uint32 user_limit = 5;
+
+  // Opus/APM preset.
+  VoiceProfile voice_profile = 6;
+
+  // Remove the channel automatically when it becomes empty.
+  bool temporary = 7;
+
+  // Make this the server's idle channel (ADR 0009).
+  bool afk = 8;
+
+  // Plain channel password; empty means no password. Only the hash is stored.
+  string password = 9;
+
+  // Position among siblings; unset appends.
+  optional int32 position = 10;
+}
+
+// ChannelUpdate changes a channel without moving it. Unset fields keep their
+// current value. An empty password removes the password.
+message ChannelUpdate {
+  // Channel to change.
+  uint64 channel_id = 1;
+
+  // New display name.
+  optional string name = 2;
+
+  // New topic.
+  optional string topic = 3;
+
+  // New kind.
+  optional ChannelKind kind = 4;
+
+  // New user limit, 0 for unlimited.
+  optional uint32 user_limit = 5;
+
+  // New voice profile.
+  optional VoiceProfile voice_profile = 6;
+
+  // New temporary flag.
+  optional bool temporary = 7;
+
+  // New idle-channel flag.
+  optional bool afk = 8;
+
+  // When set, replaces the channel password; an empty string removes it.
+  optional string password = 9;
+}
+
+// ChannelDelete removes a channel and its subtree. A channel with users is
+// rejected; move them out first.
+message ChannelDelete {
+  // Channel to remove.
+  uint64 channel_id = 1;
+}
+
+// ChannelMove re-parents a channel and/or changes its sibling position.
+message ChannelMove {
+  // Channel to move.
+  uint64 channel_id = 1;
+
+  // New parent; 0 moves the channel to the top level.
+  uint64 parent_id = 2;
+
+  // Position among the new siblings; unset appends.
+  optional int32 position = 3;
+}
+
+// ChannelListQuery is intentionally empty: the reply contains every channel the
+// caller may see.
+message ChannelListQuery {}
+
+// ChannelList is the channel tree in display order.
+message ChannelList {
+  // Channels in display order.
+  repeated Channel channels = 1;
+}
+
+// ChannelOverrideListQuery lists the overrides of one channel.
+message ChannelOverrideListQuery {
+  // Channel whose overrides are returned.
+  uint64 channel_id = 1;
+}
+
+// ChannelOverrideList is every allow/deny pair of one channel.
+message ChannelOverrideList {
+  // Overrides, ordered by role id.
+  repeated ChannelOverride overrides = 1;
+}
+
+// ApiTokenCreate mints an HTTP API token. Requires PERMISSION_MANAGE_SERVER.
+// The plaintext token is returned only in this reply and never stored.
+message ApiTokenCreate {
+  // Human-readable token name shown in the admin UI and the audit log.
+  string name = 1;
+
+  // Role the token acts as. Must be manageable by the caller.
+  uint64 role_id = 2;
+
+  // Lifetime in seconds; 0 means no expiry.
+  uint32 expires_in_seconds = 3;
+}
+
+// ApiToken describes a token without its secret.
+message ApiToken {
+  // Stable token id.
+  uint64 id = 1;
+
+  // Human-readable name.
+  string name = 2;
+
+  // Role the token acts as; 0 when the role was deleted.
+  uint64 role_id = 3;
+
+  // User who created the token; 0 for the local admin socket.
+  uint64 created_by = 4;
+
+  // Unix timestamp in milliseconds.
+  int64 created_at_unix_ms = 5;
+
+  // Unix timestamp in milliseconds; 0 means no expiry.
+  int64 expires_at_unix_ms = 6;
+
+  // Unix timestamp in milliseconds; 0 means active.
+  int64 revoked_at_unix_ms = 7;
+
+  // Unix timestamp in milliseconds of the last authenticated request; 0 when
+  // the token has never been used.
+  int64 last_used_at_unix_ms = 8;
+
+  // Plaintext bearer token, filled only by the reply to ApiTokenCreate.
+  string token = 9;
+}
+
+// ApiTokenListQuery is intentionally empty.
+message ApiTokenListQuery {}
+
+// ApiTokenList is every token, newest first.
+message ApiTokenList {
+  // Tokens without their secrets.
+  repeated ApiToken tokens = 1;
+}
+
+// ApiTokenRevoke invalidates a token immediately.
+message ApiTokenRevoke {
+  // Token id from an ApiTokenList reply.
+  uint64 token_id = 1;
+}
+
+// MemberListQuery lists users for the member administration screen.
+message MemberListQuery {
+  // Case-insensitive nickname substring; empty lists everyone.
+  string query = 1;
+
+  // Include users that are currently offline. Defaults to true.
+  bool include_offline = 2;
+}
+
+// BanListQuery lists bans.
+message BanListQuery {
+  // Include expired bans. Defaults to false.
+  bool include_expired = 1;
+}
+
+// BanEntry is one key or address ban.
+message BanEntry {
+  // Stable ban id.
+  uint64 id = 1;
+
+  // User whose key is banned; 0 when unknown or for an address ban.
+  uint64 user_id = 2;
+
+  // Banned Ed25519 public key in lowercase hex; empty for an address ban.
+  string public_key = 3;
+
+  // Banned address; empty for a key ban.
+  string ip = 4;
+
+  // Human-readable reason.
+  string reason = 5;
+
+  // User who created the ban; 0 for the local admin socket.
+  uint64 created_by = 6;
+
+  // Unix timestamp in milliseconds.
+  int64 created_at_unix_ms = 7;
+
+  // Unix timestamp in milliseconds; 0 means permanent.
+  int64 expires_at_unix_ms = 8;
+
+  // True when the ban has expired.
+  bool expired = 9;
+}
+
+// BanList is a list of bans, newest first.
+message BanList {
+  // Bans.
+  repeated BanEntry bans = 1;
+}
+
+// InviteCreate makes a new invite link. The plaintext token is returned only in
+// the reply, never stored.
+message InviteCreate {
+  // Role granted to whoever logs in with the invite; 0 means the default
+  // Member role.
+  uint64 role_id = 1;
+
+  // Lifetime in seconds; 0 means the invite never expires.
+  uint32 expires_in_seconds = 2;
+
+  // How many logins the invite admits. 0 means one use.
+  uint32 max_uses = 3;
+}
+
+// InviteRevoke invalidates an unused invite.
+message InviteRevoke {
+  // Invite id from an InviteList reply.
+  uint64 invite_id = 1;
+}
+
+// InviteListQuery lists invites, newest first.
+message InviteListQuery {
+  // Include revoked, expired and used-up invites. Defaults to false.
+  bool include_inactive = 1;
+}
+
+// ServerSettingsSet changes server-wide settings. Unset fields keep their
+// current value.
+message ServerSettingsSet {
+  // New display name.
+  optional string name = 1;
+
+  // New admission policy.
+  optional LoginMode login_mode = 2;
+
+  // New online-user cap, 0 for unlimited.
+  optional uint32 max_users = 3;
+
+  // When set, replaces the server password used by LOGIN_MODE_PASSWORD. An
+  // empty value removes it. The plaintext is hashed and never stored.
+  optional string password = 4;
+
+  // New per-file attachment limit in bytes. The server accepts 1 MiB to 2 GiB
+  // (stage P3); values outside that range are rejected.
+  optional uint64 max_attachment_bytes = 5;
+}
+
+// MemberKick disconnects a user. Requires PERMISSION_KICK and a lower role.
+message MemberKick {
+  // User to disconnect.
+  uint64 user_id = 1;
+
+  // Reason shown to the user and recorded in the audit log.
+  string reason = 2;
+}
+
+// MemberBan bans a user by key, by address, or both, and disconnects the
+// session when the user is online.
+message MemberBan {
+  // User whose public key is banned. Required when by_key is true.
+  uint64 user_id = 1;
+
+  // Also ban the address the user is currently connected from. The server
+  // resolves the address from the online session; an offline user cannot be
+  // banned by address this way.
+  bool by_ip = 2;
+
+  // Ban the public key. Defaults to true when the field is absent.
+  optional bool by_key = 3;
+
+  // Reason shown to the user and recorded in the audit log.
+  string reason = 4;
+
+  // Ban lifetime in seconds; 0 means permanent.
+  uint32 expires_in_seconds = 5;
+}
+
+// MemberUnban removes a ban by public key, by address, or both.
+message MemberUnban {
+  // User whose key ban is lifted.
+  uint64 user_id = 1;
+
+  // Address whose ban is lifted.
+  string ip = 2;
+}
+
+// MemberMove moves another user to a channel. Requires PERMISSION_MOVE_MEMBERS,
+// a lower role and the target's PERMISSION_JOIN_CHANNEL in the destination.
+message MemberMove {
+  // User to move.
+  uint64 user_id = 1;
+
+  // Destination channel; 0 removes the user from every channel.
+  uint64 channel_id = 2;
+}
+
+// MemberSetMuted applies or lifts a server-side mute.
+message MemberSetMuted {
+  // User to mute or unmute.
+  uint64 user_id = 1;
+
+  // True mutes, false lifts the mute.
+  bool muted = 2;
+}
+
+// MemberSetDeafened applies or lifts a server-side deafen.
+message MemberSetDeafened {
+  // User to deafen or undeafen.
+  uint64 user_id = 1;
+
+  // True deafens, false lifts the deafen.
+  bool deafened = 2;
+}
+
+// MemberStopStream stops the screen share of another user.
+message MemberStopStream {
+  // User whose screen share is stopped.
+  uint64 user_id = 1;
+}
+
+// AuditList reads the audit log, newest first.
+message AuditList {
+  // Page size, capped by the server. 0 means the server default (50).
+  uint32 limit = 1;
+
+  // Return entries with id strictly below this value; 0 starts at the newest
+  // entry. Use AuditPage.next_before_id for the next page.
+  uint64 before_id = 2;
+
+  // Only entries whose action starts with this prefix; empty means all.
+  string action_prefix = 3;
+
+  // Only entries made by this user; 0 means all. Actions made through the
+  // local socket and API tokens have actor_id 0.
+  uint64 actor_id = 4;
+}
+
+// AuditEntry is one recorded administrative action.
+message AuditEntry {
+  // Stable entry id, increasing over time.
+  uint64 id = 1;
+
+  // Acting user, 0 for actions made through the local admin socket.
+  uint64 actor_id = 2;
+
+  // Acting user's nickname, or "cli" for the local socket.
+  string actor_name = 3;
+
+  // Machine-readable action, e.g. "member.kick" or "role.update".
+  string action = 4;
+
+  // Affected user, 0 when none.
+  uint64 target_user_id = 5;
+
+  // Affected channel, 0 when none.
+  uint64 target_channel_id = 6;
+
+  // Affected role, 0 when none.
+  uint64 target_role_id = 7;
+
+  // Human-readable details; never contains secrets.
+  string details = 8;
+
+  // Unix timestamp in milliseconds.
+  int64 created_at_unix_ms = 9;
+}
+
+// AuditPage is one page of the audit log.
+message AuditPage {
+  // Entries, newest first.
+  repeated AuditEntry entries = 1;
+
+  // Value to pass as AuditList.before_id for the next page; 0 when the page is
+  // the last one.
+  uint64 next_before_id = 2;
+
+  // True when another page exists.
+  bool has_more = 3;
+}
+
+// RoleList is the complete role list in ascending power order.
+message RoleList {
+  // All roles.
+  repeated Role roles = 1;
+}
+
+// ChannelOverride is the allow/deny pair of one role in one channel.
+message ChannelOverride {
+  // Channel the override applies to.
+  uint64 channel_id = 1;
+
+  // Role the override applies to.
+  uint64 role_id = 2;
+
+  // Permissions granted after denies.
+  PermissionSet allow = 3;
+
+  // Permissions removed after the role union.
+  PermissionSet deny = 4;
+}
+
+// Invite describes one invite. The token itself is not stored, so it appears
+// only in the reply to InviteCreate.
+message Invite {
+  // Stable invite id.
+  uint64 id = 1;
+
+  // Role granted on login; 0 means the default Member role.
+  uint64 role_id = 2;
+
+  // Creator, 0 for invites made before roles existed or through the local
+  // socket.
+  uint64 created_by = 3;
+
+  // Unix timestamp in milliseconds.
+  int64 created_at_unix_ms = 4;
+
+  // Unix timestamp in milliseconds; 0 means no expiry.
+  int64 expires_at_unix_ms = 5;
+
+  // Maximum number of logins.
+  uint32 max_uses = 6;
+
+  // Logins already spent.
+  uint32 used_count = 7;
+
+  // Unix timestamp in milliseconds; 0 means active.
+  int64 revoked_at_unix_ms = 8;
+
+  // Join link, filled only by the reply to InviteCreate.
+  string url = 9;
+}
+
+// InviteList is a list of invites, newest first.
+message InviteList {
+  // Invites.
+  repeated Invite invites = 1;
+}
+
+// UserListEntry is one known user for the admin UI and the local CLI.
+message UserListEntry {
+  // Stable user id.
+  uint64 id = 1;
+
+  // Last display name.
+  string nickname = 2;
+
+  // Roles held by the user.
+  repeated uint64 role_ids = 3;
+
+  // True while the user has an online session.
+  bool online = 4;
+
+  // Unix timestamp in milliseconds of the last login.
+  int64 last_seen_at_unix_ms = 5;
+
+  // Channel the user is currently in; 0 when offline or not in a channel.
+  uint64 channel_id = 6;
+}
+
+// UserList lists every known user.
+message UserList {
+  // Users, in creation order.
+  repeated UserListEntry users = 1;
+}

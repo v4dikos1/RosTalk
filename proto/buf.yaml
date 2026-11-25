@@ -1,0 +1,13 @@
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  # Ignores hide real problems from the reviewer of the contract.
+  disallow_comment_ignores: true
+breaking:
+  # Compare every file against the base branch (design: wire compatibility is
+  # checked per file, so a deleted message is caught even inside a big file).
+  use:
+    - FILE

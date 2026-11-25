@@ -1,0 +1,58 @@
+# Forbidden imports of the release client (stage 2.3.3).
+#
+# Checked by tools/anticheat/imports.ps1 with `dumpbin /imports` on
+# client/src-tauri/target/release/rostalk.exe after `make build-client`. One
+# Win32 import name per line; `#` starts a comment. The names come from the
+# table "Запрещено всегда" in docs/anticheat.md, section
+# "Античит-гигиена".
+#
+# An import that is already present in tools/anticheat/imports-baseline.txt is
+# a known transitive dependency and does not fail the check. Anything else
+# does: a new forbidden import means our own code or a new crate started using
+# it. Fix the code; do not patch third-party crates and do not add the line to
+# the baseline without a human decision (docs/anticheat.md).
+
+# Чужие процессы: память и потоки.
+OpenProcess
+OpenProcessToken
+ReadProcessMemory
+WriteProcessMemory
+NtReadVirtualMemory
+NtWriteVirtualMemory
+NtOpenProcess
+NtProtectVirtualMemory
+VirtualAllocEx
+VirtualProtectEx
+SetThreadContext
+CreateRemoteThread
+CreateRemoteThreadEx
+MiniDumpWriteDump
+NtQuerySystemInformation
+
+# Хуки.
+SetWindowsHookExA
+SetWindowsHookExW
+SetWinEventHook
+
+# Синтетический ввод.
+SendInput
+keybd_event
+mouse_event
+BlockInput
+
+# Перечисление процессов и окон.
+CreateToolhelp32Snapshot
+Process32FirstW
+EnumProcesses
+EnumWindows
+PrintWindow
+
+# Ядро и система, скрытность.
+AdjustTokenPrivileges
+SetWindowDisplayAffinity
+OpenSCManagerW
+CreateServiceW
+StartServiceW
+NtLoadDriver
+DeviceIoControl
+WinExec

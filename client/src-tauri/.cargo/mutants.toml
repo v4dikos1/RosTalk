@@ -1,0 +1,49 @@
+# Mutation testing for the client core (docs/TEST-QUALITY.md).
+#
+# Scope is deliberately narrow: only the pure/logic modules with unit tests.
+# `voice` (C++/libwebrtc) and the integration tests are out of scope because a
+# single mutant run there costs minutes, which does not fit the time budget in
+# docs/TEST-QUALITY.md.
+#
+# Run from this directory (client/src-tauri):
+#
+#   cargo mutants                          # whole configured scope
+#   cargo mutants --file crates/core/src/link.rs
+#   cargo mutants --shard 0/2 --file crates/core/src/settings.rs
+#
+# The config file is read automatically because it lives in `.cargo/`.
+
+# Modules under mutation. Keep this list in sync with docs/TEST-QUALITY.md.
+examine_globs = [
+    "crates/core/src/link.rs",
+    "crates/core/src/error.rs",
+    "crates/core/src/model.rs",
+    "crates/core/src/state.rs",
+    "crates/core/src/settings.rs",
+]
+
+# Only `rostalk-core` is built and tested: the Tauri shell and the voice crate
+# must not be dragged into every mutant build.
+test_package = ["rostalk-core"]
+
+# Unit tests only. `crates/core/tests/server_integration.rs` starts a real
+# server and is explicitly out of scope.
+additional_cargo_test_args = ["--lib"]
+
+# Test binaries are linked for every mutant. Debug info in them is never used
+# (a failing mutant is re-run by hand), and dropping it cuts the link step that
+# dominates a run on a 6-core machine.
+additional_cargo_args = ["--config", "profile.test.debug=0", "--config", "profile.dev.debug=0"]
+
+# Test timeouts stay relative to the baseline, with a floor that tolerates a
+# loaded machine. The unit suite takes well under a second, so 60 s is already
+# very generous; anything above it is a hang caused by the mutation.
+timeout_multiplier = 5.0
+minimum_test_timeout = 60.0
+
+# Parallelism is a command-line option in cargo-mutants 27 (`-j1` in the Makefile
+# target): one mutant build already saturates the machine, and three parallel
+# builds on a 6-core machine made each one six times slower (measured).
+
+# Keep the output in one ignored directory so `make mutants-report` can read it.
+output = "target/mutants"

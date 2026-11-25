@@ -1,0 +1,16 @@
+# Optional integration with https://pre-commit.com. The plain git hook in
+# .githooks/ does the same; enable one of them, not both:
+#
+#   make install-hooks          # git config core.hooksPath .githooks
+#   pre-commit install          # uses this file
+#
+# These are the fast checks only. `make check` (and CI) runs the full suite.
+repos:
+  - repo: local
+    hooks:
+      - id: rostalk-fast-checks
+        name: rostalk fast checks (buf, gofmt, rustfmt, whitespace)
+        entry: .githooks/pre-commit
+        language: script
+        pass_filenames: false
+        always_run: true

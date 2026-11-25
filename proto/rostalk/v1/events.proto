@@ -1,0 +1,146 @@
+syntax = "proto3";
+
+// Unsolicited server events. After Welcome the server keeps the client in sync
+// by sending ServerFrame{reply_to: 0, event: ...}. Events are not replayed: a
+// reconnecting client receives a fresh snapshot instead.
+package rostalk.v1;
+
+import "rostalk/v1/chat.proto";
+import "rostalk/v1/state.proto";
+
+option go_package = "github.com/v4dikos1/RosTalk/proto/gen/go/rostalk/v1;rostalkv1";
+
+// Event wraps one state change. Exactly one variant is set.
+//
+// Events that reference a channel or a user are only delivered to clients that
+// may see that channel (PERMISSION_VIEW_CHANNEL); the server filters them per
+// recipient.
+message Event {
+  // The change that happened.
+  oneof payload {
+    // A user connected to the server.
+    UserJoined user_joined = 1;
+    // A user disconnected from the server.
+    UserLeft user_left = 2;
+    // A user changed channel (including joining from no channel and leaving).
+    UserMoved user_moved = 3;
+    // Any other change of a user: nickname, roles, voice state, stream flag.
+    UserUpdated user_updated = 4;
+    // A channel was created.
+    ChannelCreated channel_created = 5;
+    // A channel was renamed, moved, edited or its user count changed.
+    ChannelUpdated channel_updated = 6;
+    // A channel was deleted (including empty temporary channels).
+    ChannelDeleted channel_deleted = 7;
+    // Server settings changed (name, login mode, limits).
+    ServerUpdated server_updated = 8;
+    // The role list changed; clients replace their cached list.
+    RolesUpdated roles_updated = 9;
+    // The caller's own effective permissions changed. Sent only to the
+    // affected user.
+    PermissionsUpdated permissions_updated = 10;
+    // A chat message was created (stage 4.1). Sent to every participant of
+    // the conversation, including the author.
+    MessageCreated message_created = 11;
+    // A message body or its mentions changed. Sent to every participant.
+    MessageUpdated message_updated = 12;
+    // A message disappeared. Sent to every participant.
+    MessageDeleted message_deleted = 13;
+    // Unread or mention counters of the caller changed. Sent only to the
+    // affected user.
+    UnreadUpdated unread_updated = 14;
+  }
+}
+
+// UserJoined announces a new online user.
+message UserJoined {
+  // Complete user state, including the channel the user is in (if any).
+  User user = 1;
+}
+
+// UserLeft announces that a user is gone.
+message UserLeft {
+  // Id of the user that disconnected.
+  uint64 user_id = 1;
+}
+
+// UserMoved announces a channel change.
+message UserMoved {
+  // Id of the user that moved.
+  uint64 user_id = 1;
+
+  // Channel the user was in before, 0 when the user was not in a channel.
+  uint64 from_channel_id = 2;
+
+  // Channel the user is in now, 0 when the user left all channels.
+  uint64 to_channel_id = 3;
+}
+
+// UserUpdated replaces the mutable state of a user.
+message UserUpdated {
+  // Full new user state; clients replace their cached copy.
+  User user = 1;
+}
+
+// ChannelCreated announces a new channel.
+message ChannelCreated {
+  // Complete channel state.
+  Channel channel = 1;
+}
+
+// ChannelUpdated replaces the mutable state of a channel.
+message ChannelUpdated {
+  // Full new channel state; clients replace their cached copy.
+  Channel channel = 1;
+}
+
+// ChannelDeleted announces that a channel disappeared.
+message ChannelDeleted {
+  // Id of the removed channel. Children are re-parented or removed by separate
+  // events, so clients never have to infer the tree.
+  uint64 channel_id = 1;
+}
+
+// ServerUpdated replaces the server info block of the snapshot.
+message ServerUpdated {
+  // Full new server state; clients replace their cached copy.
+  ServerInfo server = 1;
+}
+
+// RolesUpdated replaces the role list of the snapshot.
+message RolesUpdated {
+  // All roles in ascending position order.
+  repeated Role roles = 1;
+}
+
+// PermissionsUpdated replaces the caller's own permission view after a role or
+// channel override change.
+message PermissionsUpdated {
+  // Full new permission view; clients replace their cached copy.
+  MyPermissions permissions = 1;
+}
+
+// MessageCreated announces a new chat message.
+message MessageCreated {
+  // Complete message, including attachments and mentions.
+  Message message = 1;
+}
+
+// MessageUpdated replaces the mutable state of a message.
+message MessageUpdated {
+  // Full message with the new body and edit timestamp.
+  Message message = 1;
+}
+
+// MessageDeleted announces that a message was removed.
+message MessageDeleted {
+  // The removed message without body or attachments; the ids identify the
+  // conversation for every recipient.
+  Message message = 1;
+}
+
+// UnreadUpdated replaces the caller's counter of one conversation.
+message UnreadUpdated {
+  // Full new counter; clients replace their cached value.
+  UnreadCounter counter = 1;
+}

@@ -1,0 +1,53 @@
+name: rostalk-dev
+
+# Development server (design 7). Works on Docker Desktop for Windows without
+# WSL, without a local Go toolchain, and without --network host.
+#
+#   docker compose -f deploy/dev/compose.yaml up --build
+#
+# Compose reads deploy/dev/.env automatically; copy .env.example to .env and set
+# ROSTALK_ADVERTISE_IP to the LAN IP of the host (see the root README). The value
+# is passed to the server as --advertise-ip. Never use 127.0.0.1: a client on
+# the same Windows host cannot send media to loopback once ICE binds to the LAN
+# address (ADR 0001). ROSTALK_LOOPBACK=false becomes
+# --enable-loopback-candidate=false for the same reason.
+services:
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy/dev/Dockerfile
+      args:
+        VERSION: ${ROSTALK_VERSION:-dev}
+        COMMIT: ${ROSTALK_COMMIT:-unknown}
+        BUILT_AT: ${ROSTALK_BUILT_AT:-unknown}
+    image: rostalk-server:dev
+    init: true
+    command:
+      - run
+      - --data=/data
+      - --listen=:7443
+      - --public-host=${ROSTALK_ADVERTISE_IP:-}
+      - --advertise-ip=${ROSTALK_ADVERTISE_IP:-}
+      - --enable-loopback-candidate=${ROSTALK_LOOPBACK:-false}
+    ports:
+      - "7443:7443"
+      - "7881:7881"
+      - "7882:7882/udp"
+    volumes:
+      - rostalk-data:/data
+    restart: unless-stopped
+
+  # Linux test runner for hosts without Go (Windows): the same sources, with
+  # the race detector. It is behind a profile so `up` does not start it.
+  #   docker compose -f deploy/dev/compose.yaml --profile test run --rm --build test
+  test:
+    profiles: ["test"]
+    build:
+      context: ../..
+      dockerfile: deploy/dev/Dockerfile
+      target: test
+    image: rostalk-server:test
+    init: true
+
+volumes:
+  rostalk-data:

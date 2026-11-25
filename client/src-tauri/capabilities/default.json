@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal capability set of the main window: core IPC, events and the window commands of the custom title bar (ADR 0024). No filesystem, shell, HTTP or process plugins are exposed to the WebView (design 8).",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:webview:allow-set-webview-zoom",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-close"
+  ]
+}

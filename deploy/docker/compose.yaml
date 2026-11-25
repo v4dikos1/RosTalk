@@ -1,0 +1,51 @@
+name: rostalk
+
+# Production example for a VPS or a home server (design 7).
+#
+#   cp .env.example .env       # set ROSTALK_PUBLIC_HOST
+#   docker compose -f deploy/docker/compose.yaml up -d --build
+#   docker compose -f deploy/docker/compose.yaml logs server   # admin invite
+#
+# Ports are published on purpose: do not add `network_mode: host` (CONTRIBUTING.md,
+# ADR 0001). Inside Docker, automatic router forwarding (--nat) cannot work;
+# publish the ports here or in the provider panel instead.
+services:
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        VERSION: ${ROSTALK_VERSION:-dev}
+        COMMIT: ${ROSTALK_COMMIT:-unknown}
+        BUILT_AT: ${ROSTALK_BUILT_AT:-unknown}
+    image: rostalk-server:latest
+    init: true
+    command:
+      - run
+      - --data=/data
+      - --listen=:7443
+      # The public address clients use in invite links. Never localhost.
+      - --public-host=${ROSTALK_PUBLIC_HOST:?set ROSTALK_PUBLIC_HOST to the public or LAN IP}
+      # ICE must announce the same address clients can reach.
+      - --advertise-ip=${ROSTALK_ADVERTISE_IP:?set ROSTALK_ADVERTISE_IP to the public or LAN IP}
+      # Domain mode: add --domain=${ROSTALK_DOMAIN} and
+      # --acme-http-addr=:8080 --acme-tls-addr=:8443 here, publish 80:8080 and
+      # 443:8443 below, and set ROSTALK_DOMAIN in the environment.
+    ports:
+      - "7443:7443"
+      - "7881:7881"
+      - "7882:7882/udp"
+      # Uncomment together with --domain=... and the two --acme-*-addr flags
+      # below. The image runs as an unprivileged user, so ACME listens on
+      # high ports inside the container; Docker maps them to 80/443.
+      # - "80:8080"
+      # - "443:8443"
+    volumes:
+      - rostalk-data:/data
+    environment:
+      # Domain mode passes the domain to the healthcheck; leave empty otherwise.
+      ROSTALK_DOMAIN: ${ROSTALK_DOMAIN:-}
+    restart: unless-stopped
+
+volumes:
+  rostalk-data:

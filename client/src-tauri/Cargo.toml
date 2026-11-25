@@ -1,0 +1,91 @@
+[package]
+name = "rostalk"
+version = "0.3.0"
+description = "RosTalk desktop client (Windows-first, Tauri 2 shell)"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "rostalk_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.7", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2.5.5"
+tauri-plugin-window-state = "2.5.0"
+# Stage 6.2: signed in-app updates. The endpoint is chosen at runtime from the
+# settings (or ROSTALK_UPDATE_SOURCE); the minisign public key lives in
+# tauri.conf.json and the private key stays outside the repository.
+#
+# P13: no `zip` feature. With it the plugin links the `zip` crate, whose
+# Windows extraction creates symlinks through `std::os::windows::fs::symlink`
+# and so adds `kernel32!DeviceIoControl` to the release imports (forbidden, see
+# docs/anticheat.md). RosTalk publishes plain NSIS `.exe` updates, which the
+# plugin installs without `zip`; `.exe.zip`/`.msi.zip` payloads are unused.
+tauri-plugin-updater = { version = "2.14.1", default-features = false, features = [
+    "rustls-tls",
+    "system-proxy",
+] }
+# Stage 6.2: optional autostart at Windows logon, minimized to tray. Uses the
+# usual HKCU\...\Run entry (allowed by the anti-cheat white list).
+tauri-plugin-autostart = "2.7.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+url = "2.5"
+log = "=0.4.35"
+specta = { version = "=2.0.0-rc.28", features = ["derive"] }
+specta-typescript = "0.0.15"
+tauri-specta = { version = "=2.0.0-rc.29", features = ["derive", "typescript"] }
+rostalk-core = { path = "crates/core" }
+rostalk-platform = { path = "crates/platform" }
+rostalk-voice = { path = "crates/voice" }
+# Native file dialog for identity export/import (stage 2.4). The WebView never
+# gets filesystem access; it only receives the chosen path.
+rfd = "0.18.0"
+
+[dev-dependencies]
+semver = "1.0"
+tempfile = "3.20"
+
+# The WebView2 COM settings (native context menu, stage 2.3.1). Pinned to the
+# version Tauri 2.12 already resolves, so no second COM binding is linked.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "=0.39.1"
+# `SetForegroundWindow` for our own window (stage 2.3.3a). tauri's window focus
+# helper goes through tao's `force_window_active`, which falls back to a
+# synthetic ALT via `SendInput` when Windows refuses the foreground change;
+# synthetic input is forbidden (ADR 0012, "Античит-гигиена"). Version and
+# `Win32_Foundation` match the crates/platform manifest: the HWND alias lives in
+# Foundation, the call itself in WindowsAndMessaging.
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "crates/core",
+    "crates/voice",
+    "crates/platform",
+    "crates/hosting",
+    # P13: the Windows server installer, a separate application (ADR 0026).
+    "apps/server-setup",
+]
+
+# The debug test profile runs the voice quality gate in real time. The
+# DeepFilterNet3 kernels (SIMD intrinsics, stage P17, ADR 0029) and the FFT
+# behind them are 30 to 50 times slower unoptimised and would miss the 10 ms
+# frame deadline, so only these dependencies are optimised in dev and test
+# builds. The release profile is untouched.
+[profile.dev.package.dfn3_rs]
+opt-level = 3
+[profile.dev.package.realfft]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3

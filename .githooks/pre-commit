@@ -1,0 +1,38 @@
+#!/bin/sh
+# Fast checks before a commit. The full suite (builds, tests and the
+# generated-code diff) is `make check`, which CI runs on every pull request.
+#
+# Enable once per clone: make install-hooks
+
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+if have buf; then
+  (cd proto && buf lint && buf format --diff --exit-code)
+else
+  echo "pre-commit: buf not found, skipping protobuf checks (CI runs them)"
+fi
+
+if have gofmt; then
+  unformatted=$(gofmt -l server tools)
+  if [ -n "$unformatted" ]; then
+    echo "pre-commit: gofmt found unformatted files:"
+    echo "$unformatted"
+    exit 1
+  fi
+else
+  echo "pre-commit: gofmt not found, skipping Go formatting"
+fi
+
+if have cargo; then
+  (cd client/src-tauri && cargo fmt --all -- --check)
+else
+  echo "pre-commit: cargo not found, skipping Rust formatting"
+fi
+
+# Trailing whitespace and conflict markers in staged changes.
+git diff --check --cached

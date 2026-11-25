@@ -1,0 +1,31 @@
+# Known forbidden imports in the release client (stage 2.3.3).
+#
+# tools/anticheat/imports.ps1 reads this file after `dumpbin /imports` on
+# client/src-tauri/target/release/rostalk.exe. One imported symbol per line:
+#
+#     Symbol # dll — crate version (who pulls it in, who calls it)
+#
+# A symbol from tools/anticheat/forbidden-imports.txt that is listed here is an
+# import of a third-party dependency that was already in the binary when the
+# anti-cheat lint was introduced. It does not fail the check; anything else
+# does. Third-party crates are not patched: the baseline records the fact for a
+# human decision, and a new import means our code or a new dependency started
+# using a forbidden API (docs/anticheat.md).
+#
+# Generated 2026-11-20 from the release build of stage/2.3.3-anticheat-lint
+# (MSVC, tauri 2.12.7, tao 0.37.3, muda 0.20.0). Both symbols come from Tauri's
+# window/menu stack, not from client code: `git grep` finds no call site in
+# client/src-tauri, and tauri.conf.json does not enable content protection.
+#
+# SendInput: tao 0.37.3 platform_impl/windows/window.rs:1550 (force_window_active)
+# — when set_focus() cannot use SetForegroundWindow, tao presses and releases a
+# synthetic ALT to take the foreground; also called after a fullscreen window is
+# created. muda 0.20.0 platform_impl/windows/mod.rs:1229 uses the same import for
+# menu Edit commands (copy/paste/select all). Pulled in by tauri 2.12.7 via
+# tauri-runtime-wry 2.12.5 and directly.
+SendInput # tao 0.37.3 + muda 0.20.0 (tauri 2.12.7); synthetic ALT for window focus
+
+# SetWindowDisplayAffinity: tao 0.37.3 platform_impl/windows/window.rs:1070
+# (Window::set_content_protection, WDA_EXCLUDEFROMCAPTURE/WDA_NONE). Only runs
+# if a window asks for content protection; RosTalk has none (tauri.conf.json).
+SetWindowDisplayAffinity # tao 0.37.3 (tauri 2.12.7); window content protection, unused

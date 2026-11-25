@@ -1,0 +1,24 @@
+version: v2
+# Generation is local and offline on purpose: the plugins are real executables
+# installed by `make tools`, so `make gen` does not depend on the Buf Schema
+# Registry and cannot hit its rate limits or serve a different plugin build.
+# Versions are pinned here and in the Makefile / client/ui/package.json.
+clean: false
+plugins:
+  # Go types shared by server/ and tools/rostalkctl (separate Go modules, ADR 0001).
+  - local: protoc-gen-go
+    out: gen/go
+    opt:
+      - paths=source_relative
+  # Rust (prost) types for the Tauri core. The plugin emits one file per proto
+  # package; crates/core/src/proto/mod.rs wraps it.
+  - local: protoc-gen-prost
+    out: ../client/src-tauri/crates/core/src/proto
+    opt:
+      - bytes=bytes
+  # TypeScript types for the web UI.
+  - local: protoc-gen-es
+    out: ../client/ui/src/proto
+    opt:
+      - target=ts
+      - import_extension=none

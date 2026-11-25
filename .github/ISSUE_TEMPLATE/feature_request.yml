@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest an idea for RosTalk
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: How could RosTalk solve it? Anything that touches games, input or other programs must follow docs/anticheat.md.

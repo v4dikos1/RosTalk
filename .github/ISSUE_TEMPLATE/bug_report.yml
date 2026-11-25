@@ -1,0 +1,47 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Never paste invite links, tokens, keys or server logs with addresses you want to keep private.
+        Security vulnerabilities go to SECURITY.md, not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Join a voice channel
+        2. Start a screen share
+        3. ...
+  - type: input
+    id: client
+    attributes:
+      label: Client version and Windows version
+      placeholder: "RosTalk 0.3.0, Windows 11 24H2"
+  - type: input
+    id: server
+    attributes:
+      label: Server version and how it was installed
+      placeholder: "rostalk-server 0.3.0, install.sh on Ubuntu 24.04"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Diagnostics
+      description: |
+        Client: Settings → Diagnostics → Save diagnostics. Server: `journalctl -u rostalk-server -n 200`.
+        Remove anything private before attaching.
+  - type: checkboxes
+    id: anticheat
+    attributes:
+      label: Anti-cheat
+      options:
+        - label: The problem involves a game with an anti-cheat (name it above)

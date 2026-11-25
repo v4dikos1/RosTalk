@@ -1,0 +1,87 @@
+[package]
+name = "rostalk-voice"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "RosTalk client voice engine: capture, APM, gate, mixer and the LiveKit media plane"
+
+[features]
+# Replaces the microphone with a generated tone or a WAV file and the speakers
+# with a WAV recorder so tests and CI run without audio hardware (stage 2.3).
+test-audio = []
+# Makes the internal engine state inspectable from tests without a live room.
+test-hooks = []
+
+[dependencies]
+# Pinned on purpose (CONTRIBUTING.md, ADR 0002): the native WebRTC build, the audio
+# callback API and the APM frame contract are all version sensitive.
+livekit = { version = "=0.12.0", features = ["rustls-tls-native-roots"] }
+cpal = "=0.18.2"
+# Async runtime for the room, the publisher task and the integration test
+# harness. The pinned tokio matches the one livekit 0.12 uses.
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+futures-util = "=0.3.31"
+# The local pinned signalling proxy (ADR 0006): the LiveKit SDK cannot pin a
+# private CA, so the proxy terminates TLS with a custom verifier.
+tokio-tungstenite = { version = "=0.29.0", default-features = false, features = [
+    "connect",
+    "handshake",
+    "rustls-tls-native-roots",
+] }
+rustls = { version = "=0.23.46", default-features = false, features = [
+    "std",
+    "ring",
+    "tls12",
+] }
+rustls-pki-types = "=1.16.0"
+sha2 = "=0.10.9"
+hex = "=0.4.3"
+url = "=2.5.8"
+# Lock-free single-producer/single-consumer buffers between the audio callback
+# and the processing thread.
+ringbuf = "=0.5.2"
+log = "=0.4.35"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "=2.0.21"
+# The types crossed to the UI are part of the tauri-specta contract, same
+# version as rostalk-core (stage 2.1/2.2 pin it in the workspace).
+specta = { version = "=2.0.0-rc.28", features = ["derive"] }
+# Writes the ROSTALK_AUDIO_DUMP WAV files (stage 2.3.2a) and the file-backed test
+# devices. Not optional: the runtime dump has no feature gate of its own and
+# must work in a plain debug build; a release build never activates it.
+hound = "=3.5.1"
+# RNNoise noise suppression in pure Rust (stage 2.3.2e, ADR 0014). The default
+# features pull in the CLI (`bin`: clap/anyhow) and `dasp` traits for the
+# example; the library itself needs neither.
+nnnoiseless = { version = "=0.5.2", default-features = false }
+# DeepFilterNet3 "strong" noise suppression (stage P17, ADR 0029): pure Rust,
+# allocation-free `process`, the model is embedded (5.0 MiB). One direct
+# dependency (`realfft`); no ONNX runtime, no native libraries.
+dfn3_rs = "=0.1.2"
+
+# MMCSS and the 1 ms system timer for the audio threads (stage 2.3.1). Pinned to
+# the version already resolved in the workspace by Tauri. The first three
+# features are used by `scheduler.rs`; the other four by the stream-audio
+# process loopback (stage P15, ADR 0027): `Win32_Media_Audio` has
+# `ActivateAudioInterfaceAsync`, the activation parameters and the
+# `AUDCLNT_*` constants, `Win32_System_Com` has `CoInitializeEx` and `BLOB`,
+# `Win32_System_Com_StructuredStorage` and `Win32_System_Variant` are what
+# `PROPVARIANT` (the activation blob) is declared under.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Media",
+    "Win32_System_Threading",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+] }
+
+[dev-dependencies]
+tempfile = "=3.23.0"
+# The end-to-end media test drives the real core to obtain MediaCredentials.
+rostalk-core = { path = "../core" }
+rostalk-platform = { path = "../platform" }
+tokio = { version = "1.54.1", features = ["full"] }

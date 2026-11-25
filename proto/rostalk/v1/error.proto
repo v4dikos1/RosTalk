@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+// Error frame and its machine-readable codes.
+//
+// Error.message is an English technical description for logs and bug reports.
+// The UI shows its own localised text keyed by Error.code, so adding a code is
+// the only way to introduce a new user-visible failure.
+package rostalk.v1;
+
+option go_package = "github.com/v4dikos1/RosTalk/proto/gen/go/rostalk/v1;rostalkv1";
+
+// Error is sent instead of a successful payload. It answers the request whose
+// reply_to it carries, or terminates the connection (then reply_to = 0 and the
+// server closes the socket right after the frame).
+message Error {
+  // Failure category; stable part of the wire contract.
+  ErrorCode code = 1;
+
+  // Technical detail in English for logs. Never contains secrets, tokens or
+  // message contents, and is not shown to users as is.
+  string message = 2;
+
+  // True when repeating the same request later may succeed (for example after
+  // a reconnect or when a rate limit window has passed).
+  bool retryable = 3;
+
+  // Optional link the client should open, e.g. the download page for an
+  // unsupported protocol version.
+  string action_url = 4;
+}
+
+// ErrorCode enumerates all failure categories. Numeric values are part of the
+// wire contract and must never change meaning.
+enum ErrorCode {
+  // Unknown failure; clients show a generic message.
+  ERROR_CODE_UNSPECIFIED = 0;
+
+  // The frame was malformed: empty payload, unknown tag, too large.
+  ERROR_CODE_INVALID_FRAME = 1;
+  // A request field was missing, out of range or inconsistent.
+  ERROR_CODE_INVALID_REQUEST = 2;
+  // Hello.protocol_version is not supported by this server.
+  ERROR_CODE_PROTOCOL_VERSION_UNSUPPORTED = 3;
+  // A frame arrived before the handshake completed.
+  ERROR_CODE_UNAUTHENTICATED = 4;
+
+  // The signature did not verify, the key is malformed or the nonce expired.
+  ERROR_CODE_AUTH_FAILED = 5;
+  // The invite token is unknown, already used up or revoked.
+  ERROR_CODE_INVITE_INVALID = 6;
+  // The invite token expired.
+  ERROR_CODE_INVITE_EXPIRED = 7;
+  // The user (key or address) is banned.
+  ERROR_CODE_BANNED = 8;
+  // The server password is wrong.
+  ERROR_CODE_WRONG_PASSWORD = 9;
+  // Too many attempts from this address or session.
+  ERROR_CODE_RATE_LIMITED = 10;
+  // The same key connected from another connection; this session is closed.
+  ERROR_CODE_SESSION_REPLACED = 11;
+
+  // The caller lacks the permission for the request.
+  ERROR_CODE_PERMISSION_DENIED = 12;
+  // The referenced channel, user or role does not exist.
+  ERROR_CODE_NOT_FOUND = 13;
+  // The channel requires a password and none was supplied.
+  ERROR_CODE_CHANNEL_PASSWORD_REQUIRED = 14;
+  // The supplied channel password is wrong.
+  ERROR_CODE_CHANNEL_PASSWORD_INVALID = 15;
+  // The channel is at its user limit.
+  ERROR_CODE_CHANNEL_FULL = 16;
+
+  // The request was valid but the server refused it for another stated reason
+  // (for example "cannot join a text channel with voice").
+  ERROR_CODE_REJECTED = 17;
+  // Unexpected server-side failure; details are in the server log.
+  ERROR_CODE_INTERNAL = 18;
+  // The server is shutting down; reconnect later.
+  ERROR_CODE_SERVER_SHUTTING_DOWN = 19;
+  // A moderator disconnected the user. Reconnecting may be possible unless a
+  // ban follows.
+  ERROR_CODE_KICKED = 20;
+  // The action was rejected by the role hierarchy: the target's highest role
+  // is not below the caller's.
+  ERROR_CODE_HIERARCHY = 21;
+}

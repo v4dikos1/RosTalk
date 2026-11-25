@@ -1,0 +1,43 @@
+[package]
+name = "rostalk-platform"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "RosTalk client platform glue: identity storage, encrypted identity export, later hotkeys and proxy"
+
+[dependencies]
+# Ed25519 identity (design 4.2). Pinned: the key format and the seed layout are
+# part of the exported identity file.
+ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+# Password-based encryption of the identity export: argon2id + XChaCha20-Poly1305.
+argon2 = { version = "0.5.3", features = ["std"] }
+chacha20poly1305 = { version = "0.10.1", features = ["std"] }
+zeroize = "1.8.1"
+sha2 = "0.10.9"
+base64 = "0.22.1"
+thiserror = "=2.0.21"
+
+# The OS keychain is the only place the private key lives on Windows (design
+# 4.2). On other platforms the client is not shipped; a stub keeps the workspace
+# buildable there (CI checks rostalk-core on Linux, not this crate's backend).
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6.3", features = ["windows-native"] }
+# Raw Input (`RegisterRawInputDevices`) is the only global input path: it is
+# the same API games use, needs no hook and no injection (ADR 0012). The low
+# level `WH_*` hooks were removed because Vanguard compatibility is mandatory.
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tempfile = "3.23.0"
