@@ -55,10 +55,11 @@ test.describe("UX fixes screenshots", () => {
     await shot(page, "onboarding-direct-dark-ru");
   });
 
-  test("invite popover in the header", async ({ page }) => {
+  test("invite dialog from the server menu", async ({ page }) => {
     await openMock(page, "theme=dark&lang=ru&channel=3");
-    await page.getByTestId("invite-open").last().click();
-    await expect(page.getByTestId("invite-popover")).toBeVisible();
+    await page.getByTestId("server-name").click();
+    await page.getByTestId("server-menu-invite").click();
+    await expect(page.getByTestId("invite-dialog")).toBeVisible();
     await shot(page, "invite-popover-dark-ru");
   });
 

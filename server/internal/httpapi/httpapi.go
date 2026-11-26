@@ -118,7 +118,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/v1/avatars/me", s.handleAvatarSet)
 	s.mux.HandleFunc("DELETE /api/v1/avatars/me", s.handleAvatarClear)
 	s.mux.HandleFunc("GET /api/v1/avatars/{hash}", s.handleAvatarGet)
-	s.mux.HandleFunc("DELETE /api/v1/members/{id}/avatar", s.handleMemberAvatarReset)
 	s.mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "the endpoint does not exist")
 	})

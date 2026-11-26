@@ -48,6 +48,8 @@ describe("ProfileMenu", () => {
     expect(screen.getByTestId("profile-panel")).toHaveTextContent("Alex");
     await userEvent.click(screen.getByTestId("profile-panel"));
     expect(screen.getByTestId("profile-menu")).toBeInTheDocument();
+    // Stage P27: the avatar editor lives in the profile section, not here.
+    expect(screen.queryByTestId("profile-menu-avatar")).toBeNull();
     await userEvent.click(screen.getByTestId("profile-menu-profile"));
     expect(useAppStore.getState().settingsOpen).toBe(true);
     expect(useAppStore.getState().settingsSection).toBe("profile");

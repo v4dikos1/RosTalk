@@ -2,7 +2,6 @@ import {
   ArrowLeft,
   Crown,
   Eye,
-  Flame,
   Hash,
   HeadphoneOff,
   Lock,
@@ -92,7 +91,6 @@ const icons = [
   { icon: Paperclip, label: "Attach" },
   { icon: Eye, label: "Viewers" },
   { icon: Play, label: "Play" },
-  { icon: Flame, label: "Brand" },
   { icon: UserPlus, label: "Invite" },
 ] as const;
 

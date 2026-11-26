@@ -11,6 +11,8 @@ import type {
   ParticipantSettings,
   ServerBookmark,
   ServerProbeView,
+  NativeStreamMessage,
+  NativeStreamSupport,
   StreamCredentialsView,
   UpdateCheck,
   VoiceEvent,
@@ -43,6 +45,13 @@ const fixtureVoiceState: VoiceState = {
   micTest: false,
   gate: { mode: "voiceActivation", threshold_db: -45, hold_ms: 300 },
   pushToTalk: { hook: "active", binding: "X1/X2", error: null },
+  globalInput: {
+    registered: true,
+    keyboardCaptured: false,
+    pushToTalk: true,
+    toggleMute: false,
+    toggleDeafen: false,
+  },
   inputDevice: "fixture-mic",
   outputDevice: "fixture-headphones",
   error: null,
@@ -83,6 +92,19 @@ function stateForQuery(): CoreState {
   const params = new URLSearchParams(window.location.search);
   const variant = params.get("state");
   const base = structuredClone(fixtureState);
+  const requestedServer = params.get("server");
+  if (requestedServer === "rostalk" || requestedServer === "long") {
+    const name =
+      requestedServer === "rostalk"
+        ? "RosTalk"
+        : "Сервер друзей и очень длинное название, которое проверяет шапку";
+    if (base.server) {
+      base.server.name = name;
+    }
+    base.servers = base.servers.map((server) =>
+      server.id === base.activeServerId ? { ...server, name } : server,
+    );
+  }
   if (variant === "disconnected") {
     return {
       ...base,
@@ -172,6 +194,27 @@ function stateForQuery(): CoreState {
     if (self) {
       self.roleIds = [3];
     }
+  }
+  if (params.get("room") === "six") {
+    // Six people in one voice room, two of them sharing a screen: the P26
+    // screenshot matrix needs a full header, two stream tiles and the viewer
+    // controls without changing the shared fixture for other stages.
+    const participants = base.users.slice(0, 6).map((user, index) => ({
+      ...user,
+      channelId: 4,
+      streaming: index >= 4,
+      watchingUserIds: [],
+      voice: { ...user.voice, away: false },
+    }));
+    base.users = participants;
+    if (base.server) {
+      base.server.onlineUsers = participants.length;
+    }
+    base.channels = base.channels.map((channel) =>
+      channel.id === 4
+        ? { ...channel, userCount: participants.length, userLimit: 0 }
+        : channel,
+    );
   }
   return base;
 }
@@ -559,11 +602,35 @@ export const fixtureCoreApi: CoreApi = {
   },
 
   async setVoiceState(): Promise<void> {},
+  async toggleVoiceState(): Promise<void> {},
   async setNickname(): Promise<void> {},
 
   // The fixture presence already carries a viewer list, so the browser mock
   // accepts the report without changing it (stage P12).
   async setWatching(): Promise<void> {},
+
+  async nativeStreamSupport(): Promise<NativeStreamSupport> {
+    return {
+      supported: false,
+      cursorCaptureAvailable: false,
+      borderApiAvailable: false,
+      reason: "native capture is available only in the desktop client",
+    };
+  },
+
+  async startNativeStream(): Promise<void> {
+    throw new Error("native capture is unavailable in the browser preview");
+  },
+
+  async stopNativeStream(): Promise<void> {},
+
+  async getNativeStreamState(): Promise<NativeStreamMessage | null> {
+    return null;
+  },
+
+  subscribeNativeStream(): () => void {
+    return () => {};
+  },
 
   async removeServer(): Promise<ServerBookmark[]> {
     return [];
@@ -652,6 +719,29 @@ export const fixtureCoreApi: CoreApi = {
   async logUiError(): Promise<void> {},
 
   async getVoiceState(): Promise<VoiceState> {
+    const params = new URLSearchParams(window.location.search);
+    const screen = params.get("state");
+    if (
+      screen === "disconnected" ||
+      screen === "banned" ||
+      screen === "outdated" ||
+      screen === "connecting"
+    ) {
+      return {
+        ...structuredClone(voice),
+        media: "idle",
+        publishing: false,
+        publishAllowed: false,
+        channelId: 0,
+        selfMuted: false,
+        deafened: false,
+        micTest: false,
+        error: null,
+      };
+    }
+    if (params.get("room") === "six") {
+      return { ...structuredClone(voice), channelId: 4 };
+    }
     return structuredClone(voice);
   },
 

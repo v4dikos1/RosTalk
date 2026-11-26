@@ -1,7 +1,6 @@
 import {
   ArrowLeftRight,
   ChevronUp,
-  ImagePlus,
   LogOut,
   Settings2,
   UserRound,
@@ -10,7 +9,6 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { UserAvatar } from "@/components/common/UserAvatar";
-import { AvatarDialog } from "@/components/profile/AvatarDialog";
 import {
   Popover,
   PopoverContent,
@@ -30,12 +28,12 @@ const MENU_WIDTH = 224;
 /**
  * The bottom-left "avatar + nickname + status" panel (stage P7).
  *
- * A click opens the profile menu: profile, avatar, settings, another server,
- * quit. Settings moved here from the voice control bar; the bar keeps
- * microphone, sound, stream and leaving the channel. The menu is a Radix
- * Popover, so it is portalled and never clipped by the bottom bar (stage P8);
- * the avatar crop dialog lives outside the popover, so closing the menu does
- * not unmount it (stage P11).
+ * A click opens the profile menu: profile, settings, another server, quit.
+ * Settings moved here from the voice control bar; the bar keeps microphone,
+ * sound, stream and leaving the channel. The menu is a Radix Popover, so it is
+ * portalled and never clipped by the bottom bar (stage P8). The avatar editor
+ * lives inside the profile section since stage P27; the menu has no separate
+ * "change avatar" item anymore.
  */
 export function ProfileMenu() {
   const { t } = useTranslation();
@@ -46,7 +44,6 @@ export function ProfileMenu() {
   const openSettings = useAppStore((store) => store.openSettings);
   const openServerList = useAppStore((store) => store.openServerList);
   const [open, setOpen] = useState(false);
-  const [avatarOpen, setAvatarOpen] = useState(false);
 
   const self = state?.users.find((user) => user.id === state.selfUserId);
   const connected = state?.connection === "connected";
@@ -200,15 +197,6 @@ export function ProfileMenu() {
             onClick={() => choose("profile")}
           />
           <MenuItem
-            icon={ImagePlus}
-            label={t("profileMenu.changeAvatar")}
-            testId="profile-menu-avatar"
-            onClick={() => {
-              setOpen(false);
-              setAvatarOpen(true);
-            }}
-          />
-          <MenuItem
             icon={Settings2}
             label={t("profileMenu.settings")}
             testId="profile-menu-settings"
@@ -230,7 +218,6 @@ export function ProfileMenu() {
           />
         </PopoverContent>
       </Popover>
-      <AvatarDialog open={avatarOpen} onOpenChange={setAvatarOpen} />
     </>
   );
 }

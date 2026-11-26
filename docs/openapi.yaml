@@ -684,19 +684,3 @@ paths:
               schema: { type: string, format: binary }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
-  /members/{id}/avatar:
-    delete:
-      summary: Reset another user's avatar
-      description: |
-        Requires `manageServer`; the target may be offline. The audit log gets
-        a `member.avatar_reset` entry.
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: integer, format: int64 }
-      responses:
-        '204': { description: Removed }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }

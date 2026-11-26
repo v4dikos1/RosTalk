@@ -18,6 +18,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -187,6 +188,28 @@ pub struct PttStatus {
     pub error: Option<String>,
 }
 
+/// Which actions the global Raw Input registration actually delivers.
+///
+/// Push-to-talk has its own [`PttStatus`] with the effective label and error;
+/// this only says whether each action reached the router. Mute, deafen and
+/// push-to-talk are independent: an invalid push-to-talk binding must not turn
+/// the valid toggles into window-only shortcuts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalInputStatus {
+    /// True while the Raw Input registration is running.
+    pub registered: bool,
+    /// True when the registration captures the keyboard (an explicit key or
+    /// the explicit background-combination opt-in); mouse-only stays false.
+    pub keyboard_captured: bool,
+    /// Push-to-talk reached the router.
+    pub push_to_talk: bool,
+    /// Mute reached the router.
+    pub toggle_mute: bool,
+    /// Deafen reached the router.
+    pub toggle_deafen: bool,
+}
+
 /// Voice engine state reported to the UI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -209,6 +232,8 @@ pub struct VoiceState {
     pub gate: GateMode,
     /// Push-to-talk binding and input status.
     pub push_to_talk: PttStatus,
+    /// Which actions the global registration delivers.
+    pub global_input: GlobalInputStatus,
     /// Opened input device id.
     pub input_device: Option<String>,
     /// Opened output device id.
@@ -229,6 +254,7 @@ impl Default for VoiceState {
             mic_test: false,
             gate: GateMode::default(),
             push_to_talk: PttStatus::default(),
+            global_input: GlobalInputStatus::default(),
             input_device: None,
             output_device: None,
             error: None,
@@ -331,7 +357,7 @@ enum Command {
         identity: String,
         muted: bool,
     },
-    SetPushToTalk(bool),
+    SetPushToTalk(PttEvent),
     SetMicTest(bool),
     SetSounds(SoundSettings),
     PlaySound {
@@ -339,6 +365,7 @@ enum Command {
         preview: bool,
     },
     SetPttStatus(PttStatus),
+    SetGlobalInputStatus(GlobalInputStatus),
     StartStreamAudio(oneshot::Sender<Result<(), VoiceError>>),
     StopStreamAudio,
     WatchStreamAudio {
@@ -369,6 +396,61 @@ struct PublishedAudio {
     channels: u32,
 }
 
+/// One press or release reported by the Raw Input thread.
+///
+/// The handle numbers every event before it queues the command, so the engine
+/// can tell the newest request from one that waited in the queue behind a
+/// rebuild.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PttEvent {
+    /// Monotonic number of the request; a newer request has a higher one.
+    sequence: u64,
+    /// Whether the button was down when the handle recorded it.
+    active: bool,
+}
+
+/// Latest push-to-talk request from the Raw Input thread.
+///
+/// The engine handles commands one at a time, and `restart_audio` waits for a
+/// device while a press or a release can already be queued. The handle records
+/// the request before it sends the command, and this record is the single
+/// source of truth for the button: a rebuilt tract reads it directly, while a
+/// queued command applies only if its event is still the newest one. A press
+/// that waited behind a recorded release therefore cannot open the gate, not
+/// even between two rebuilds (stage P25 rework).
+#[derive(Clone, Default)]
+struct PttRequest(Arc<AtomicU64>);
+
+impl PttRequest {
+    /// Records a press or release and returns its numbered event.
+    ///
+    /// The sequence and the state live in one word, so a reader never sees the
+    /// number of one request with the state of another.
+    fn record(&self, active: bool) -> PttEvent {
+        let mut state = self.0.load(Ordering::SeqCst);
+        loop {
+            let sequence = (state >> 1).wrapping_add(1);
+            let next = (sequence << 1) | u64::from(active);
+            match self
+                .0
+                .compare_exchange_weak(state, next, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return PttEvent { sequence, active },
+                Err(current) => state = current,
+            }
+        }
+    }
+
+    /// Newest recorded request.
+    fn latest(&self) -> PttEvent {
+        let state = self.0.load(Ordering::SeqCst);
+        PttEvent {
+            sequence: state >> 1,
+            active: state & 1 == 1,
+        }
+    }
+}
+
 /// Cheap handle used by the IPC layer.
 #[derive(Clone)]
 pub struct VoiceHandle {
@@ -378,6 +460,7 @@ pub struct VoiceHandle {
     formats: Arc<RwLock<AudioFormats>>,
     stream_audio: Arc<RwLock<StreamAudioState>>,
     capture_source: CaptureSource,
+    ptt_request: PttRequest,
 }
 
 impl VoiceHandle {
@@ -465,7 +548,12 @@ impl VoiceHandle {
 
     /// Push-to-talk key or mouse button state from `rostalk-platform`.
     pub fn set_push_to_talk(&self, active: bool) -> Result<(), VoiceError> {
-        self.send(Command::SetPushToTalk(active))
+        // Record before sending: a rebuild may be awaiting the device and must
+        // see this press/release, not the last command the engine handled. The
+        // numbered event lets the engine drop this command if a newer request
+        // is already recorded by the time it runs (stage P25 rework).
+        let event = self.ptt_request.record(active);
+        self.send(Command::SetPushToTalk(event))
     }
 
     /// Starts or stops the microphone loopback (mic test).
@@ -497,6 +585,11 @@ impl VoiceHandle {
     /// Reports the push-to-talk binding and whether its input is running.
     pub fn set_ptt_status(&self, status: PttStatus) -> Result<(), VoiceError> {
         self.send(Command::SetPttStatus(status))
+    }
+
+    /// Reports which actions the global Raw Input registration delivers.
+    pub fn set_global_input_status(&self, status: GlobalInputStatus) -> Result<(), VoiceError> {
+        self.send(Command::SetGlobalInputStatus(status))
     }
 
     /// Last known stream-audio state.
@@ -590,6 +683,7 @@ pub fn start(
     spawn_device_watcher(device_tx);
     let capture_source = capture_source(&config);
     let stream_audio = Arc::new(RwLock::new(StreamAudioState::default()));
+    let ptt_request = PttRequest::default();
 
     let handle = VoiceHandle {
         commands,
@@ -598,6 +692,7 @@ pub fn start(
         formats: formats.clone(),
         stream_audio: stream_audio.clone(),
         capture_source,
+        ptt_request: ptt_request.clone(),
     };
 
     let engine = Engine {
@@ -635,6 +730,7 @@ pub fn start(
         stream_tracks: HashMap::new(),
         connection_lost: false,
         last_ptt_down: false,
+        ptt_request,
     };
 
     let spawned = std::thread::Builder::new()
@@ -795,6 +891,8 @@ struct Engine {
     connection_lost: bool,
     /// Last push-to-talk state, to sound the edge once (Raw Input repeats).
     last_ptt_down: bool,
+    /// Latest press/release, recorded by the handle before the command queue.
+    ptt_request: PttRequest,
 }
 
 impl Engine {
@@ -880,6 +978,11 @@ impl Engine {
                 .state
                 .read()
                 .map(|s| s.push_to_talk.clone())
+                .unwrap_or_default(),
+            global_input: self
+                .state
+                .read()
+                .map(|s| s.global_input)
                 .unwrap_or_default(),
             input_device: audio
                 .and_then(|a| a.capture_device().map(str::to_owned))
@@ -1031,19 +1134,7 @@ impl Engine {
                 }
                 self.update_audio(MixerUpdate::Muted { identity, muted });
             }
-            Command::SetPushToTalk(active) => {
-                let changed = self.last_ptt_down != active;
-                self.last_ptt_down = active;
-                self.shared.set_push_to_talk(active);
-                self.apply_publish_mute();
-                if changed && self.config.gate == GateMode::PushToTalk {
-                    self.play_sound(if active {
-                        EventSound::PttDown
-                    } else {
-                        EventSound::PttUp
-                    });
-                }
-            }
+            Command::SetPushToTalk(event) => self.handle_push_to_talk(event),
             Command::SetMicTest(enabled) => {
                 self.shared.set_mic_test(enabled);
                 self.mutate_state(|state| state.mic_test = enabled);
@@ -1057,6 +1148,9 @@ impl Engine {
             }
             Command::SetPttStatus(status) => {
                 self.mutate_state(|state| state.push_to_talk = status);
+            }
+            Command::SetGlobalInputStatus(status) => {
+                self.mutate_state(|state| state.global_input = status);
             }
             Command::StartStreamAudio(reply) => {
                 let result = self.start_stream_audio().await;
@@ -1271,6 +1365,9 @@ impl Engine {
             state.publishing = false;
         });
         if allowed {
+            // A release may have arrived while the room was connecting. Apply
+            // it before the track can feed anything to the network.
+            self.apply_latest_push_to_talk();
             self.start_publish().await;
         }
         self.resume_stream_audio(credentials.channel_id).await;
@@ -1310,6 +1407,9 @@ impl Engine {
                     session.publication = Some(sid);
                     session.track = Some(publication);
                 }
+                // The publication await can overlap a release; close the gate
+                // before the source starts feeding the track.
+                self.apply_latest_push_to_talk();
                 if let Some(sender) = &self.publisher {
                     let _ = sender.send(PublisherCommand::Source(Some(PublishedAudio {
                         source,
@@ -1353,6 +1453,48 @@ impl Engine {
             log::debug!("unpublishing the microphone track failed: {error}");
         }
         self.mutate_state(|state| state.publishing = false);
+    }
+
+    /// Applies one press or release command from the input thread.
+    ///
+    /// Only the newest recorded request may change the gate or the cue state.
+    /// A command can be older than the request when it waited in the queue
+    /// behind a rebuild: a press queued before the user released the key must
+    /// not reopen the gate on the new tract, and an old event must not rewind
+    /// `last_ptt_down` and play a cue for a state that was never applied. The
+    /// release cue is kept for the newest event, so a real release still sounds
+    /// once (stage P25 rework).
+    fn handle_push_to_talk(&mut self, event: PttEvent) {
+        let latest = self.ptt_request.latest();
+        if latest.sequence != event.sequence {
+            // A newer press or release is already recorded; its own command is
+            // on the way. This one is stale and must not move the button.
+            return;
+        }
+        let active = latest.active;
+        let changed = self.last_ptt_down != active;
+        self.last_ptt_down = active;
+        self.shared.set_push_to_talk(active);
+        self.apply_publish_mute();
+        if changed && self.config.gate == GateMode::PushToTalk {
+            self.play_sound(if active {
+                EventSound::PttDown
+            } else {
+                EventSound::PttUp
+            });
+        }
+    }
+
+    /// Copies the latest push-to-talk request into the audio gate.
+    ///
+    /// A release can arrive while the tract is being rebuilt or a room is being
+    /// connected, both of which await. Reading the handle's newest request
+    /// instead of the last processed command keeps a new tract from opening on
+    /// an old press; `last_ptt_down` stays untouched, so the newest queued
+    /// command still reports its edge once (stage P25 rework).
+    fn apply_latest_push_to_talk(&self) {
+        self.shared
+            .set_push_to_talk(self.ptt_request.latest().active);
     }
 
     /// Mutes or unmutes the published track after a mute, a gate change or a
@@ -1802,6 +1944,14 @@ impl Engine {
                         .map(|state| state.mic_test)
                         .unwrap_or(false),
                 );
+                // The key may still be held while a device change rebuilds the
+                // tract. Without this the new `SharedAudio` starts with a
+                // released button, and push-to-talk stays silent until the
+                // user presses it again (stage P25). Use the latest request,
+                // not the last processed command: a release that arrived
+                // during the rebuild must not open the new tract on an old
+                // press (stage P25 rework).
+                self.apply_latest_push_to_talk();
                 self.audio = Some(audio);
                 self.start_publisher();
                 // Re-add the per-user settings; the tracks themselves come back
@@ -2061,7 +2211,7 @@ impl Engine {
         self.remove_stream_track(&identity);
         let key = mixer_key(&identity);
         let (mut publisher, level, consumer) = Mixer::create_track(&key);
-        self.update_audio(MixerUpdate::Add {
+        self.update_audio(MixerUpdate::AddStream {
             identity: key,
             consumer,
             level,
@@ -2642,6 +2792,180 @@ mod tests {
         assert_eq!(state.media, MediaPhase::Idle);
         assert!(!state.publishing);
         assert_eq!(state.channel_id, 0);
+    }
+
+    /// Stage P25 rework: an engine with a silent gate state and no devices. The
+    /// push-to-talk command and the rebuild restore both run for real; the
+    /// mixer, the publisher and the cues are absent, so nothing leaves the
+    /// process.
+    fn engine_for_ptt_tests() -> Engine {
+        let config = VoiceConfig {
+            gate: GateMode::PushToTalk,
+            ..VoiceConfig::default()
+        };
+        let shared = Arc::new(SharedAudio::for_test(&AudioConfig {
+            gate: config.gate,
+            ..AudioConfig::default()
+        }));
+        let (_commands, commands) = mpsc::unbounded_channel();
+        let (_devices, device_events) = mpsc::unbounded_channel();
+        Engine {
+            config,
+            sink: Arc::new(|_event| {}),
+            audio: None,
+            shared,
+            devices: DeviceList::default(),
+            state: Arc::new(RwLock::new(VoiceState::default())),
+            device_list: Arc::new(RwLock::new(DeviceList::default())),
+            formats: Arc::new(RwLock::new(AudioFormats::default())),
+            commands,
+            device_events,
+            credentials: None,
+            session: None,
+            room_events: None,
+            tracks: HashMap::new(),
+            volumes: HashMap::new(),
+            mutes: HashSet::new(),
+            publisher: None,
+            stats: StatsCollector::default(),
+            last_counters: AudioCounters::default(),
+            reconnect_at: None,
+            publish_retry_at: None,
+            audio_retry_at: None,
+            stream_error_policy: StreamErrorPolicy::default(),
+            last_error: None,
+            capture_source: CaptureSource::System,
+            stream_audio: Arc::new(RwLock::new(StreamAudioState::default())),
+            stream_wanted: None,
+            stream_publication: None,
+            stream_error: None,
+            stream_watch: HashSet::new(),
+            stream_gains: HashMap::new(),
+            stream_tracks: HashMap::new(),
+            connection_lost: false,
+            last_ptt_down: false,
+            ptt_request: PttRequest::default(),
+        }
+    }
+
+    /// What `restart_audio`/`start_publish` do with the button after a
+    /// successful start: a fresh `SharedAudio` gets the latest request, not the
+    /// last processed command.
+    fn rebuild_shared(engine: &mut Engine) {
+        engine.shared = Arc::new(SharedAudio::for_test(&AudioConfig {
+            gate: engine.config.gate,
+            ..AudioConfig::default()
+        }));
+        engine.apply_latest_push_to_talk();
+    }
+
+    /// Stage P25 rework, review §87 blocker: the command queue can hold a press
+    /// after the release has already been recorded. The rebuild restores the
+    /// gate from the request (closed), then the stale press command runs. It
+    /// must not reopen the gate, not even after a second rebuild or a
+    /// republish; the recorded request must not move backwards either.
+    #[test]
+    fn a_queued_press_cannot_reopen_the_gate_after_a_recorded_release() {
+        let mut engine = engine_for_ptt_tests();
+
+        // The input thread records the press and the release before the engine
+        // runs either command: it is awaiting a device for the rebuild.
+        let press = engine.ptt_request.record(true);
+        let release = engine.ptt_request.record(false);
+        rebuild_shared(&mut engine);
+        assert!(
+            !engine.shared.feeds_publisher(),
+            "the release closed the new tract"
+        );
+        rebuild_shared(&mut engine);
+        assert!(!engine.shared.feeds_publisher());
+
+        // The queued press runs now. It is older than the recorded release and
+        // must change neither the gate nor the applied state that drives the
+        // cues.
+        engine.handle_push_to_talk(press);
+        assert!(
+            !engine.shared.feeds_publisher(),
+            "a stale press reopened the gate"
+        );
+        assert!(
+            !engine.last_ptt_down,
+            "a stale press moved the applied state"
+        );
+        assert_eq!(
+            engine.ptt_request.latest(),
+            release,
+            "a command rewound the recorded request"
+        );
+
+        // A republish reads the request again; the stale press still cannot
+        // open anything.
+        engine.apply_latest_push_to_talk();
+        engine.handle_push_to_talk(press);
+        assert!(!engine.shared.feeds_publisher());
+
+        // The release command is the newest event and confirms the closed gate.
+        engine.handle_push_to_talk(release);
+        assert!(!engine.shared.feeds_publisher());
+        assert!(!engine.last_ptt_down);
+
+        // A real new press after all of that still opens the gate.
+        let held = engine.ptt_request.record(true);
+        engine.handle_push_to_talk(held);
+        assert!(
+            engine.shared.feeds_publisher(),
+            "a fresh press must transmit"
+        );
+    }
+
+    /// A press that was already applied keeps its release cue through a
+    /// rebuild: the rebuild closes the gate from the request but leaves
+    /// `last_ptt_down`, so the newest queued release still reports its edge
+    /// once (stage P25 rework).
+    #[test]
+    fn a_release_after_a_rebuild_still_reports_its_edge() {
+        let mut engine = engine_for_ptt_tests();
+        let press = engine.ptt_request.record(true);
+        engine.handle_push_to_talk(press);
+        assert!(engine.last_ptt_down);
+
+        let release = engine.ptt_request.record(false);
+        rebuild_shared(&mut engine);
+        assert!(!engine.shared.feeds_publisher());
+        assert!(
+            engine.last_ptt_down,
+            "the rebuild must keep the edge for the queued release"
+        );
+
+        engine.handle_push_to_talk(release);
+        assert!(!engine.last_ptt_down, "the newest release reports its edge");
+        assert!(!engine.shared.feeds_publisher());
+    }
+
+    /// The mirror case: a release that waited in the queue must not close the
+    /// gate a newer press opened, including after a rebuild.
+    #[test]
+    fn an_old_release_cannot_close_a_newer_press() {
+        let mut engine = engine_for_ptt_tests();
+        let first = engine.ptt_request.record(true);
+        let old_release = engine.ptt_request.record(false);
+        let second = engine.ptt_request.record(true);
+
+        // The rebuild opens the tract on the newest request (the second press).
+        rebuild_shared(&mut engine);
+        assert!(engine.shared.feeds_publisher());
+
+        // The commands drain in order; the two older events are stale.
+        engine.handle_push_to_talk(first);
+        assert!(engine.shared.feeds_publisher());
+        engine.handle_push_to_talk(old_release);
+        assert!(
+            engine.shared.feeds_publisher(),
+            "a stale release closed the gate"
+        );
+        engine.handle_push_to_talk(second);
+        assert!(engine.shared.feeds_publisher());
+        assert_eq!(engine.ptt_request.latest(), second);
     }
 
     #[test]

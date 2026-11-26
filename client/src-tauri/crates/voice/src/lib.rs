@@ -20,6 +20,7 @@ pub mod level;
 pub mod leveler;
 pub mod loopback;
 pub mod mixer;
+pub mod native_stream;
 pub mod pipeline;
 pub mod processing;
 pub mod resample;
@@ -35,8 +36,8 @@ pub use testaudio::FakeClock;
 
 pub use devices::{AudioFormats, DeviceInfo, DeviceList, OpenFormat, StreamFormatInfo};
 pub use engine::{
-    start, MediaCredentials, MediaPhase, MediaUpdate, ParticipantLevel, PttHookState, PttStatus,
-    VoiceConfig, VoiceEvent, VoiceHandle, VoiceLevels, VoiceState,
+    start, GlobalInputStatus, MediaCredentials, MediaPhase, MediaUpdate, ParticipantLevel,
+    PttHookState, PttStatus, VoiceConfig, VoiceEvent, VoiceHandle, VoiceLevels, VoiceState,
 };
 pub use error::VoiceError;
 pub use frame::{FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE};

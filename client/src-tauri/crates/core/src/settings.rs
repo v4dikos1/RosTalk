@@ -504,9 +504,23 @@ pub struct VoiceSettings {
     pub processing: AudioProcessing,
     /// Output volume in percent, 0..=200.
     pub output_volume: u8,
-    /// Level the loudness of incoming voices (stage P17). Off by default.
-    #[serde(default)]
+    /// Last voice-activation threshold in dBFS. It lives next to the gate mode
+    /// so switching to push-to-talk and back keeps the user's calibrated
+    /// threshold instead of resetting it to the default (stage P25).
+    #[serde(default = "default_activation_threshold")]
+    pub activation_threshold_db: f32,
+    /// Level the loudness of incoming voices (stage P17). On by default since
+    /// stage P25: a quiet headset was masked by game sound, and the fixed
+    /// leveler now reaches the common target (ADR 0037).
+    #[serde(default = "default_level_voices")]
     pub level_voices: bool,
+    /// Capture the configured modifier combinations (for example
+    /// `Ctrl+Shift+M`) with Raw Input while another application is focused.
+    ///
+    /// Off by default: background keyboard capture is an explicit user choice
+    /// (ADR 0012). A single key or mouse button is global without it.
+    #[serde(default)]
+    pub background_hotkeys: bool,
     pub sounds: CueSettings,
     pub hotkeys: Vec<HotkeyBinding>,
 }
@@ -519,7 +533,9 @@ impl Default for VoiceSettings {
             gate: GateSettings::default(),
             processing: AudioProcessing::default(),
             output_volume: 100,
-            level_voices: false,
+            activation_threshold_db: default_activation_threshold(),
+            level_voices: default_level_voices(),
+            background_hotkeys: false,
             sounds: CueSettings::default(),
             hotkeys: default_hotkeys(),
         }
@@ -643,6 +659,16 @@ fn default_economy_minutes() -> u32 {
 /// The channel member pane is shown on a wide window by default.
 fn default_members_pane_open() -> bool {
     true
+}
+
+/// Loudness leveling of remote voices is on by default (stage P25, ADR 0037).
+fn default_level_voices() -> bool {
+    true
+}
+
+/// Voice-activation threshold kept across PTT and continuous mode changes.
+fn default_activation_threshold() -> f32 {
+    -45.0
 }
 
 /// Everything the core persists for the interface and the voice engine.
@@ -856,6 +882,12 @@ impl ClientSettings {
         self.voice.output_volume = self.voice.output_volume.min(200);
         self.voice.sounds.volume = self.voice.sounds.volume.min(100);
         self.voice.gate = self.voice.gate.sanitized();
+        self.voice.activation_threshold_db = self.voice.activation_threshold_db.clamp(-80.0, 0.0);
+        if let GateSettings::VoiceActivation { threshold_db, .. } = self.voice.gate {
+            // The gate in voice activation is the source of truth; the separate
+            // field only preserves that value while another mode is active.
+            self.voice.activation_threshold_db = threshold_db;
+        }
         self.participants.retain(|entry| entry.key.len() <= 160);
         for entry in &mut self.participants {
             entry.volume = entry.volume.min(200);
@@ -887,23 +919,40 @@ impl ClientSettings {
                 binding.accelerator = Some("X1/X2".to_owned());
             }
         }
-        // Two actions on one accelerator would fire twice; the first (in UI
-        // order) keeps it.
+        // Two actions on one input would fire twice; the first (in UI order)
+        // keeps it. `X1/X2` occupies both side buttons, `Mouse4`/`Mouse5` one
+        // each, so a pair and a single button cannot overlap unnoticed.
         let mut used: Vec<String> = Vec::new();
         for binding in &mut bindings {
             if let Some(accelerator) = &binding.accelerator {
-                if used
-                    .iter()
-                    .any(|taken| taken.eq_ignore_ascii_case(accelerator))
-                {
+                let occupants = accelerator_occupants(accelerator);
+                if occupants.iter().any(|taken| used.contains(taken)) {
                     binding.accelerator = None;
                 } else {
-                    used.push(accelerator.clone());
+                    used.extend(occupants);
                 }
             }
         }
         self.voice.hotkeys = bindings;
         self
+    }
+}
+
+/// Physical inputs one accelerator claims for the duplicate check.
+///
+/// Push-to-talk's implicit side buttons are deliberately not claimed: an
+/// explicit mute/deafen binding on `Mouse4` wins over the default pair while
+/// the engine keeps the remaining side button for push-to-talk.
+fn accelerator_occupants(accelerator: &str) -> Vec<String> {
+    let value = accelerator.trim();
+    if value.eq_ignore_ascii_case("X1/X2") {
+        vec!["mouse4".to_owned(), "mouse5".to_owned()]
+    } else if value.eq_ignore_ascii_case("Mouse4") || value.eq_ignore_ascii_case("X1") {
+        vec!["mouse4".to_owned()]
+    } else if value.eq_ignore_ascii_case("Mouse5") || value.eq_ignore_ascii_case("X2") {
+        vec!["mouse5".to_owned()]
+    } else {
+        vec![value.to_ascii_lowercase()]
     }
 }
 
@@ -1252,6 +1301,66 @@ mod tests {
             palette.and_then(|binding| binding.accelerator.as_deref()),
             Some("Ctrl+K")
         );
+        // Stage P25: quiet participants are leveled by default, and the
+        // activation threshold survives a mode change.
+        assert!(settings.voice.level_voices);
+        assert_eq!(settings.voice.activation_threshold_db, -45.0);
+    }
+
+    /// Stage P25, rework: the new default applies to a record without the old
+    /// field, but an explicit `levelVoices: false` from 0.3.0 is not overwritten
+    /// on load or on the next save.
+    #[test]
+    fn an_explicit_leveling_opt_out_survives_and_a_missing_field_gets_the_default() {
+        let value = serde_json::to_value(ClientSettings::default()).expect("settings json");
+
+        let mut without = value.clone();
+        without["voice"]
+            .as_object_mut()
+            .expect("voice object")
+            .remove("levelVoices");
+        let loaded: ClientSettings = serde_json::from_value(without).expect("legacy settings");
+        assert!(
+            loaded.voice.level_voices,
+            "a record without the field must get the new default"
+        );
+
+        let mut explicit = value;
+        explicit["voice"]["levelVoices"] = serde_json::json!(false);
+        let loaded: ClientSettings = serde_json::from_value(explicit).expect("opt-out settings");
+        assert!(
+            !loaded.voice.level_voices,
+            "an explicit old opt-out must survive"
+        );
+        assert!(!loaded.sanitized().voice.level_voices);
+    }
+
+    #[test]
+    fn the_activation_threshold_survives_a_push_to_talk_round_trip() {
+        let mut settings = ClientSettings::default();
+        settings.voice.gate = GateSettings::VoiceActivation {
+            threshold_db: -61.0,
+            hold_ms: 300,
+        };
+        let settings = settings.sanitized();
+        assert_eq!(settings.voice.activation_threshold_db, -61.0);
+
+        // The UI switches to push-to-talk; the gate no longer carries the
+        // threshold, but the separate field keeps it for the return trip.
+        let mut push_to_talk = settings.clone();
+        push_to_talk.voice.gate = GateSettings::PushToTalk;
+        let saved = push_to_talk.sanitized();
+        assert_eq!(saved.voice.activation_threshold_db, -61.0);
+
+        let mut back = saved;
+        back.voice.gate = GateSettings::VoiceActivation {
+            threshold_db: -20.0,
+            hold_ms: 300,
+        };
+        // Voice activation is the source of truth while it is active.
+        let sanitized = back.sanitized();
+        assert_eq!(sanitized.voice.activation_threshold_db, -20.0);
+        assert!(sanitized.voice.level_voices);
     }
 
     #[test]
@@ -1336,6 +1445,75 @@ mod tests {
             .collect();
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].action, HotkeyAction::PushToTalk);
+    }
+
+    #[test]
+    fn the_side_button_pair_conflicts_with_a_single_side_button() {
+        let mut settings = ClientSettings::default();
+        settings.voice.hotkeys = vec![
+            HotkeyBinding {
+                action: HotkeyAction::PushToTalk,
+                accelerator: Some("X1/X2".to_owned()),
+            },
+            HotkeyBinding {
+                action: HotkeyAction::ToggleMute,
+                accelerator: Some("Mouse4".to_owned()),
+            },
+        ];
+        let settings = settings.sanitized();
+        let mute = settings
+            .voice
+            .hotkeys
+            .iter()
+            .find(|binding| binding.action == HotkeyAction::ToggleMute)
+            .expect("mute");
+        // Push-to-talk comes first and keeps the pair; the editor rewrites the
+        // pair to the remaining button when the user assigns the other one.
+        assert_eq!(mute.accelerator, None);
+    }
+
+    #[test]
+    fn an_explicit_side_button_survives_a_keyboard_push_to_talk() {
+        let mut settings = ClientSettings::default();
+        settings.voice.hotkeys = vec![
+            HotkeyBinding {
+                action: HotkeyAction::PushToTalk,
+                accelerator: Some("V".to_owned()),
+            },
+            HotkeyBinding {
+                action: HotkeyAction::ToggleMute,
+                accelerator: Some("Mouse4".to_owned()),
+            },
+        ];
+        let settings = settings.sanitized();
+        let mute = settings
+            .voice
+            .hotkeys
+            .iter()
+            .find(|binding| binding.action == HotkeyAction::ToggleMute)
+            .expect("mute");
+        assert_eq!(mute.accelerator.as_deref(), Some("Mouse4"));
+    }
+
+    #[test]
+    fn background_combinations_default_off_and_survive_old_settings() {
+        let defaults = ClientSettings::default();
+        assert!(!defaults.voice.background_hotkeys);
+
+        let mut enabled = ClientSettings::default();
+        enabled.voice.background_hotkeys = true;
+        let json = serde_json::to_value(&enabled).expect("json");
+        let restored: ClientSettings = serde_json::from_value(json).expect("round trip");
+        assert!(restored.voice.background_hotkeys);
+
+        // A settings file written before P24 has no key: it must stay off.
+        let mut old = serde_json::to_value(ClientSettings::default()).expect("json");
+        old["voice"]
+            .as_object_mut()
+            .expect("voice object")
+            .remove("backgroundHotkeys");
+        let restored: ClientSettings = serde_json::from_value(old).expect("old settings");
+        assert!(!restored.voice.background_hotkeys);
     }
 
     #[test]

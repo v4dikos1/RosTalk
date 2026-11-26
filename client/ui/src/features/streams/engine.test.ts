@@ -120,7 +120,7 @@ vi.mock("livekit-client", () => {
   };
 });
 
-import { StreamEngine, parseVideoStats, type StreamPresetName } from "./engine";
+import { StreamEngine, parseVideoStats, type NativeStreamEvent, type NativeStreamMessage, type StreamPresetName } from "./engine";
 
 /** Minimal `RTCStatsReport` stand-in: the parser only reads entries and codecs. */
 function statsReport(items: Record<string, unknown>[]): {
@@ -847,3 +847,459 @@ describe("parseVideoStats", () => {
     expect(stats?.layers?.find((layer) => layer.rid === "q")?.bitrateKbps).toBe(320);
   });
 });
+
+function nativeBridge() {
+  const listeners = new Set<(message: NativeStreamMessage) => void>();
+  let currentRunId = "run-0";
+  return {
+    start: vi.fn(async (options: { runId: string }) => {
+      currentRunId = options.runId;
+    }),
+    stop: vi.fn(async () => {}),
+    stopAll: vi.fn(async () => {}),
+    support: vi.fn(async () => ({
+      supported: true,
+      cursorCaptureAvailable: true,
+      borderApiAvailable: true,
+      reason: null,
+    })),
+    subscribe: vi.fn((listener: (message: NativeStreamMessage) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    }),
+    emit: (event: NativeStreamEvent, runId: string = currentRunId) => {
+      for (const listener of listeners) listener({ runId, event });
+    },
+    runId: () => currentRunId,
+  };
+}
+
+function engineWithNative(native: ReturnType<typeof nativeBridge>) {
+  return new StreamEngine({
+    requestStreamCredentials: async () => ({
+      url: "ws://127.0.0.1:1",
+      room: "channel-4",
+      participantIdentity: "1:stream",
+      expiresInSeconds: 60,
+      presets: ["720p30", "1080p30"],
+    }),
+    native,
+    setWatching: async () => {},
+  });
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+describe("native capture", () => {
+  it("publishes through the native bridge without getDisplayMedia", async () => {
+    const native = nativeBridge();
+    const getDisplayMedia = vi.fn();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getDisplayMedia },
+    });
+    const engine = engineWithNative(native);
+    engine.setChannel(4);
+
+    await engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+
+    expect(native.start).toHaveBeenCalledWith({
+      runId: expect.any(String),
+      channelId: 4,
+      preset: "720p30",
+      includeAudio: false,
+    });
+    expect(getDisplayMedia).not.toHaveBeenCalled();
+    expect(engine.getSnapshot().local.nativeStatus).toBe("picking");
+
+    native.emit({
+      type: "publishing",
+      preset: "720p30",
+      cursorDisabled: true,
+      borderRemoved: true,
+    });
+    expect(engine.getSnapshot().local.streaming).toBe(true);
+    expect(engine.getSnapshot().local.native).toBe(true);
+    expect(engine.getSnapshot().local.preset).toBe("720p30");
+
+    await engine.stopLocal();
+    expect(native.stop).toHaveBeenCalled();
+    expect(engine.getSnapshot().local.streaming).toBe(false);
+    expect(engine.getSnapshot().local.native).toBe(false);
+  });
+
+  it("never falls back to WebView2 when the picker is cancelled", async () => {
+    const native = nativeBridge();
+    const getDisplayMedia = vi.fn();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getDisplayMedia },
+    });
+    const engine = engineWithNative(native);
+    engine.setChannel(4);
+    await engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+
+    native.emit({ type: "cancelled" });
+
+    expect(getDisplayMedia).not.toHaveBeenCalled();
+    expect(engine.getSnapshot().local.streaming).toBe(false);
+    expect(engine.getSnapshot().local.native).toBe(false);
+    expect(engine.getSnapshot().error?.code).toBe("captureCancelled");
+  });
+
+  it("rejects heavy presets instead of silently downgrading them", async () => {
+    const native = nativeBridge();
+    const engine = engineWithNative(native);
+    engine.setChannel(4);
+    await engine.startLocal({
+      preset: "1080p60",
+      includeAudio: false,
+      native: true,
+    });
+    expect(native.start).not.toHaveBeenCalled();
+    expect(engine.getSnapshot().error?.code).toBe("nativePreset");
+  });
+
+  it("reports nativeUnavailable when the desktop bridge is absent", async () => {
+    const engine = engineWithProvider();
+    engine.setChannel(4);
+    await engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    expect(engine.getSnapshot().error?.code).toBe("nativeUnavailable");
+    expect(engine.getSnapshot().local.streaming).toBe(false);
+  });
+
+  it("stops the native publisher when the channel changes", async () => {
+    const native = nativeBridge();
+    const engine = engineWithNative(native);
+    engine.setChannel(4);
+    await engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    native.emit({
+      type: "publishing",
+      preset: "720p30",
+      cursorDisabled: true,
+      borderRemoved: true,
+    });
+    engine.setChannel(5);
+    await vi.waitFor(() =>
+      expect(engine.getSnapshot().local.native).toBe(false),
+    );
+    expect(native.stop).toHaveBeenCalled();
+    expect(engine.getSnapshot().local.streaming).toBe(false);
+    expect(engine.getSnapshot().local.native).toBe(false);
+  });
+
+  it("pauses the WebView viewer while native owns the stream identity and resumes after cancel", async () => {
+    const native = nativeBridge();
+    const engine = engineWithNative(native);
+    engine.setChannel(4);
+    await engine.watch(7);
+    const roomsBefore = rooms.length;
+    expect(roomsBefore).toBeGreaterThan(0);
+    const viewerRoom = rooms.at(-1);
+
+    await engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    expect(viewerRoom?.disconnect).toHaveBeenCalled();
+
+    native.emit({ type: "cancelled" });
+    await vi.waitFor(() => expect(rooms.length).toBeGreaterThan(roomsBefore));
+  });
+
+  it("does not publish when stop wins the picker/credential race", async () => {
+    const native = nativeBridge();
+    let resolveStart: () => void = () => {};
+    native.start.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+    const engine = engineWithNative(native);
+    engine.setChannel(4);
+
+    const starting = engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    await vi.waitFor(() => expect(native.start).toHaveBeenCalled());
+    const runId = native.start.mock.calls[0]?.[0]?.runId as string;
+    const listener = native.subscribe.mock.calls[0]?.[0];
+
+    await engine.stopLocal();
+    expect(engine.getSnapshot().local.native).toBe(false);
+    expect(native.stop).toHaveBeenCalledWith(runId);
+
+    // The command answers only after the stop. A late publishing event from
+    // the old run must not turn the stream on.
+    resolveStart();
+    await starting;
+    listener?.({
+      runId,
+      event: {
+        type: "publishing",
+        preset: "720p30",
+        cursorDisabled: true,
+        borderRemoved: true,
+      },
+    });
+    expect(engine.getSnapshot().local.streaming).toBe(false);
+    expect(engine.getSnapshot().local.native).toBe(false);
+  });
+
+  it("cancels a pending native start when the channel changes", async () => {
+    const native = nativeBridge();
+    let resolveStart: () => void = () => {};
+    native.start.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+    const engine = engineWithNative(native);
+    engine.setChannel(4);
+
+    const starting = engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    await vi.waitFor(() => expect(native.start).toHaveBeenCalled());
+    const runId = native.start.mock.calls[0]?.[0]?.runId as string;
+    const listener = native.subscribe.mock.calls[0]?.[0];
+
+    engine.setChannel(5);
+    resolveStart();
+    await starting;
+    listener?.({
+      runId,
+      event: {
+        type: "publishing",
+        preset: "720p30",
+        cursorDisabled: true,
+        borderRemoved: true,
+      },
+    });
+    expect(engine.getSnapshot().local.streaming).toBe(false);
+    expect(engine.getSnapshot().local.native).toBe(false);
+  });
+
+  it("a late resolve and scoped stop from run A cannot stop run B", async () => {
+    const native = nativeBridge();
+    const aStart = deferred();
+    native.start.mockImplementationOnce(() => aStart.promise);
+    const engine = engineWithNative(native);
+    engine.setChannel(4);
+
+    const a = engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    await vi.waitFor(() => expect(native.start).toHaveBeenCalledTimes(1));
+    const runA = native.start.mock.calls[0]?.[0]?.runId as string;
+    await engine.stopLocal();
+    expect(native.stop).toHaveBeenCalledWith(runA);
+
+    const b = engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    await b;
+    const runB = native.start.mock.calls[1]?.[0]?.runId as string;
+    expect(runB).not.toBe(runA);
+    native.emit(
+      {
+        type: "publishing",
+        preset: "720p30",
+        cursorDisabled: true,
+        borderRemoved: true,
+      },
+      runB,
+    );
+    expect(engine.getSnapshot().local.streaming).toBe(true);
+
+    // A's command resolves only now. Its cleanup must use A's id, not B's.
+    aStart.resolve();
+    await a;
+    expect(native.stop).toHaveBeenCalledWith(runA);
+    expect(native.stop).not.toHaveBeenCalledWith(runB);
+    expect(engine.getSnapshot().local.streaming).toBe(true);
+    expect(engine.getSnapshot().local.native).toBe(true);
+  });
+
+  it("a late rejection from run A cannot stop or mutate run B", async () => {
+    const native = nativeBridge();
+    const aStart = deferred();
+    native.start.mockImplementationOnce(() => aStart.promise);
+    const engine = engineWithNative(native);
+    engine.setChannel(4);
+
+    const a = engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    await vi.waitFor(() => expect(native.start).toHaveBeenCalledTimes(1));
+    const runA = native.start.mock.calls[0]?.[0]?.runId as string;
+    await engine.stopLocal();
+
+    await engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    const runB = native.start.mock.calls[1]?.[0]?.runId as string;
+    native.emit(
+      {
+        type: "publishing",
+        preset: "720p30",
+        cursorDisabled: true,
+        borderRemoved: true,
+      },
+      runB,
+    );
+
+    aStart.reject(new Error("late picker failure"));
+    await a;
+    expect(native.stop).toHaveBeenCalledWith(runA);
+    expect(native.stop).not.toHaveBeenCalledWith(runB);
+    expect(engine.getSnapshot().local.streaming).toBe(true);
+    expect(engine.getSnapshot().local.native).toBe(true);
+    expect(engine.getSnapshot().error).toBeNull();
+  });
+
+  it("ignores a terminal event from run A while run B is live", async () => {
+    const native = nativeBridge();
+    const engine = engineWithNative(native);
+    engine.setChannel(4);
+
+    await engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    const runA = native.start.mock.calls[0]?.[0]?.runId as string;
+    native.emit(
+      {
+        type: "publishing",
+        preset: "720p30",
+        cursorDisabled: true,
+        borderRemoved: true,
+      },
+      runA,
+    );
+    await engine.stopLocal();
+
+    await engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    const runB = native.start.mock.calls[1]?.[0]?.runId as string;
+    native.emit(
+      {
+        type: "publishing",
+        preset: "720p30",
+        cursorDisabled: true,
+        borderRemoved: true,
+      },
+      runB,
+    );
+    native.emit({ type: "stopped" }, runA);
+
+    expect(engine.getSnapshot().local.streaming).toBe(true);
+    expect(engine.getSnapshot().local.native).toBe(true);
+  });
+
+  it("a pending stop of run A cannot mutate run B when it completes", async () => {
+    const native = nativeBridge();
+    const aStop = deferred();
+    native.stop.mockImplementationOnce(() => aStop.promise);
+    const engine = engineWithNative(native);
+    engine.setChannel(4);
+
+    await engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    const runA = native.start.mock.calls[0]?.[0]?.runId as string;
+    native.emit(
+      {
+        type: "publishing",
+        preset: "720p30",
+        cursorDisabled: true,
+        borderRemoved: true,
+      },
+      runA,
+    );
+
+    const stoppingA = engine.stopLocal();
+    await vi.waitFor(() => expect(native.stop).toHaveBeenCalledWith(runA));
+
+    await engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+    const runB = native.start.mock.calls[1]?.[0]?.runId as string;
+    native.emit(
+      {
+        type: "publishing",
+        preset: "720p30",
+        cursorDisabled: true,
+        borderRemoved: true,
+      },
+      runB,
+    );
+
+    aStop.resolve();
+    await stoppingA;
+    expect(native.stop).not.toHaveBeenCalledWith(runB);
+    expect(engine.getSnapshot().local.streaming).toBe(true);
+    expect(engine.getSnapshot().local.native).toBe(true);
+  });
+
+  it("shutdown uses the privileged app-wide stop", async () => {
+    const native = nativeBridge();
+    const engine = engineWithNative(native);
+    engine.setChannel(4);
+    await engine.startLocal({
+      preset: "720p30",
+      includeAudio: false,
+      native: true,
+    });
+
+    await engine.shutdown();
+    expect(native.stopAll).toHaveBeenCalled();
+    expect(native.stop).not.toHaveBeenCalled();
+  });});

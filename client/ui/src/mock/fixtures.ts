@@ -385,7 +385,9 @@ export const fixtureSettings: ClientSettings = {
       highPassFilter: true,
     },
     outputVolume: 100,
-    levelVoices: false,
+    activationThresholdDb: -45,
+    levelVoices: true,
+    backgroundHotkeys: false,
     sounds: {
       enabled: true,
       volume: 70,

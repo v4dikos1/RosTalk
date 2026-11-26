@@ -32,13 +32,12 @@ describe("TitleBar", () => {
     });
   });
 
-  it("shows the server and opens its actions menu", async () => {
+  it("does not repeat the server identity in the window title bar", () => {
     render(<TitleBar />);
-    expect(screen.getByTestId("title-bar-server")).toHaveTextContent(
-      "Очаг друзей",
-    );
-    await userEvent.click(screen.getByTestId("title-bar-server"));
-    expect(useAppStore.getState().serverMenu).not.toBeNull();
+    expect(screen.getByTestId("title-bar-brand")).toBeInTheDocument();
+    expect(screen.queryByText("Очаг друзей")).toBeNull();
+    expect(screen.queryByText("7 в сети")).toBeNull();
+    expect(screen.queryByTestId("title-bar-server")).toBeNull();
   });
 
   it("passes the window buttons to the window API", async () => {

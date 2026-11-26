@@ -4,7 +4,9 @@ import {
   DEFAULT_SETTINGS,
   YCUKEN_TO_QWERTY,
   acceleratorFromEvent,
+  assignHotkey,
   matchesAccelerator,
+  matchesMouseAccelerator,
   migrateAccelerator,
   normalizeHotkeys,
 } from "./settings";
@@ -58,6 +60,69 @@ describe("normalizeHotkeys", () => {
     ]);
     expect(bindings[0]?.accelerator).toBe("F8");
     expect(bindings[1]?.accelerator).toBeNull();
+  });
+
+  it("treats the side-button pair as both Mouse4 and Mouse5", () => {
+    const bindings = normalizeHotkeys([
+      { action: "pushToTalk", accelerator: "X1/X2" },
+      { action: "toggleMute", accelerator: "Mouse4" },
+    ]);
+    expect(bindings[0]?.accelerator).toBe("X1/X2");
+    expect(bindings[1]?.accelerator).toBeNull();
+    // An explicit mute binding survives a keyboard push-to-talk: the pair is
+    // only an implicit default then.
+    const keyboard = normalizeHotkeys([
+      { action: "pushToTalk", accelerator: "V" },
+      { action: "toggleMute", accelerator: "Mouse4" },
+    ]);
+    expect(keyboard[1]?.accelerator).toBe("Mouse4");
+  });
+});
+
+describe("assignHotkey", () => {
+  it("gives one side button to mute and leaves the other to push-to-talk", () => {
+    const bindings = assignHotkey(
+      [
+        { action: "pushToTalk", accelerator: "X1/X2" },
+        { action: "toggleMute", accelerator: null },
+      ],
+      "toggleMute",
+      "Mouse4",
+    );
+    expect(bindings.find((item) => item.action === "pushToTalk")?.accelerator).toBe(
+      "Mouse5",
+    );
+    expect(bindings.find((item) => item.action === "toggleMute")?.accelerator).toBe(
+      "Mouse4",
+    );
+  });
+
+  it("takes both side buttons back when push-to-talk is assigned the pair", () => {
+    const bindings = assignHotkey(
+      [
+        { action: "pushToTalk", accelerator: "Mouse5" },
+        { action: "toggleMute", accelerator: "Mouse4" },
+      ],
+      "pushToTalk",
+      "X1/X2",
+    );
+    expect(bindings.find((item) => item.action === "pushToTalk")?.accelerator).toBe(
+      "X1/X2",
+    );
+    expect(bindings.find((item) => item.action === "toggleMute")?.accelerator).toBeNull();
+  });
+
+  it("clears a keyboard clash", () => {
+    const bindings = assignHotkey(
+      [
+        { action: "pushToTalk", accelerator: "F8" },
+        { action: "toggleMute", accelerator: null },
+      ],
+      "toggleMute",
+      "F8",
+    );
+    expect(bindings.find((item) => item.action === "pushToTalk")?.accelerator).toBeNull();
+    expect(bindings.find((item) => item.action === "toggleMute")?.accelerator).toBe("F8");
   });
 });
 
@@ -159,6 +224,20 @@ describe("ЙЦУКЕН -> QWERTY migration", () => {
     expect(migrateAccelerator("X1/X2")).toBe("X1/X2");
     expect(migrateAccelerator("Ctrl+Shift+M")).toBe("Ctrl+Shift+M");
     expect(migrateAccelerator("Mouse5")).toBe("Mouse5");
+  });
+});
+
+describe("mouse hotkeys", () => {
+  it("matches the side buttons by their settings names", () => {
+    expect(matchesMouseAccelerator("Mouse4", 3)).toBe(true);
+    expect(matchesMouseAccelerator("Mouse5", 4)).toBe(true);
+    expect(matchesMouseAccelerator("X1", 3)).toBe(true);
+    expect(matchesMouseAccelerator("X2", 4)).toBe(true);
+    expect(matchesMouseAccelerator("X1/X2", 3)).toBe(true);
+    expect(matchesMouseAccelerator("X1/X2", 4)).toBe(true);
+    expect(matchesMouseAccelerator("Mouse4", 4)).toBe(false);
+    expect(matchesMouseAccelerator("Mouse5", 3)).toBe(false);
+    expect(matchesMouseAccelerator(null, 3)).toBe(false);
   });
 });
 

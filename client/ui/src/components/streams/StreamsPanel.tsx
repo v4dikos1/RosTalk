@@ -1,9 +1,11 @@
 import {
   BarChart3,
   Cast,
+  EyeOff,
   Maximize2,
   Minimize2,
   MonitorOff,
+  MonitorUp,
   Radio,
   Volume2,
   VolumeX,
@@ -80,27 +82,43 @@ export function StreamsPanel({ channel }: { channel: ChannelView }) {
     streamEngine.refreshWatching();
   }, [channel.id, watchingKey, liveKey]);
 
+  // A keyboard user must not lose focus when the tile's own action disappears
+  // (the ended-stream "Close" unmounts the tile). Prefer the same tile's Watch
+  // button, then any remaining stream action, then the streams tab/panel.
+  function unwatchAndRestoreFocus(userId: number) {
+    useStreamStore.getState().unwatch(userId);
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.setTimeout(() => {
+      const active = document.activeElement;
+      if (
+        active instanceof HTMLElement &&
+        active !== document.body &&
+        active.isConnected
+      ) {
+        return;
+      }
+      const watch = document.querySelector<HTMLElement>(
+        `[data-testid="watch-${userId}"]`,
+      );
+      if (watch?.isConnected) {
+        watch.focus();
+        return;
+      }
+      const next = document.querySelector<HTMLElement>(
+        '[data-testid^="unwatch-"], [data-testid^="watch-"], [data-testid^="retry-"], [data-testid^="close-"], [data-testid="main-tab-streams"], [data-testid="streams-panel"]',
+      );
+      next?.focus();
+    }, 0);
+  }
+
   if (connection !== "connected") {
     return (
       <ErrorState
         className="flex-1"
         title={t("streams.errorTitle")}
         description={t("streams.errorHint")}
-      />
-    );
-  }
-
-  if (
-    !local.streaming &&
-    remoteStreamers.length === 0 &&
-    endedStreamers.length === 0
-  ) {
-    return (
-      <EmptyState
-        className="flex-1"
-        icon={Radio}
-        title={t("streams.emptyTitle")}
-        description={t("streams.emptyHint")}
       />
     );
   }
@@ -113,13 +131,15 @@ export function StreamsPanel({ channel }: { channel: ChannelView }) {
     error !== null &&
     error.code !== "noSource" &&
     error.code !== "audioUnavailable" &&
-    error.code !== "audioFallback"
+    error.code !== "audioFallback" &&
+    error.code !== "captureBorder"
       ? error
       : null;
 
   return (
     <div
       data-testid="streams-panel"
+      tabIndex={-1}
       className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-background p-4"
     >
       {watchError ? (
@@ -135,13 +155,21 @@ export function StreamsPanel({ channel }: { channel: ChannelView }) {
         </div>
       ) : null}
 
-      <div
-        data-testid="streams-grid"
-        className={cn(
-          "grid min-h-0 grid-cols-1 gap-3",
-          tileCount > 1 && "sm:grid-cols-2",
-        )}
-      >
+      {tileCount === 0 ? (
+        <EmptyState
+          className="flex-1"
+          icon={Radio}
+          title={t("streams.emptyTitle")}
+          description={t("streams.emptyHint")}
+        />
+      ) : (
+        <div
+          data-testid="streams-grid"
+          className={cn(
+            "grid min-h-0 grid-cols-1 gap-3",
+            tileCount > 1 && "sm:grid-cols-2",
+          )}
+        >
         {local.streaming ? (
           <LocalTile
             viewers={streamViewers(state?.users ?? [], state?.selfUserId ?? 0)}
@@ -162,7 +190,7 @@ export function StreamsPanel({ channel }: { channel: ChannelView }) {
               viewers={streamViewers(state?.users ?? [], user.id)}
               serverId={serverId}
               onWatch={() => void watchStreamInChannel(channel.id, user.id)}
-              onUnwatch={() => useStreamStore.getState().unwatch(user.id)}
+              onUnwatch={() => unwatchAndRestoreFocus(user.id)}
             />
           );
         })}
@@ -177,10 +205,11 @@ export function StreamsPanel({ channel }: { channel: ChannelView }) {
             viewers={[]}
             serverId={serverId}
             onWatch={() => void watchStreamInChannel(channel.id, user.id)}
-            onUnwatch={() => useStreamStore.getState().unwatch(user.id)}
+            onUnwatch={() => unwatchAndRestoreFocus(user.id)}
           />
         ))}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -224,8 +253,24 @@ function LocalTile({
         ref={videoRef}
         muted
         playsInline
-        className="min-h-0 flex-1 object-contain"
+        className={cn(
+          "min-h-0 flex-1 object-contain",
+          local.native && "hidden",
+        )}
       />
+      {local.native ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 text-white/70">
+          <MonitorUp className="size-6" aria-hidden />
+          <span className="text-[12px]">
+            {local.nativeStatus === "reconnecting"
+              ? t("streams.nativeReconnecting")
+              : t("streams.nativeTile")}
+          </span>
+          <span className="text-[11px] text-white/45">
+            {STREAM_PRESETS[local.preset].label}
+          </span>
+        </div>
+      ) : null}
       <header className="absolute inset-x-0 top-0 flex items-center gap-2 bg-gradient-to-b from-black/60 to-transparent px-3 py-2.5">
         <LiveBadge onMedia />
         <span className="min-w-0 truncate text-[12px] font-medium text-white">
@@ -256,10 +301,11 @@ function LocalTile({
           statsLabel={t("streams.stats")}
         />
       </header>
-      <footer className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/60 to-transparent px-3 py-2.5">
+      <footer className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/60 to-transparent px-3 py-2.5">
         <Button
           size="xs"
           variant="danger"
+          className="pointer-events-auto"
           onClick={() => void stop()}
           data-testid="stream-stop"
         >
@@ -340,14 +386,54 @@ function RemoteTile({
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const watchRef = useRef<HTMLButtonElement>(null);
   const [statsOpen, setStatsOpen] = useState(false);
   const [volume, setVolume] = useState(100);
   const [muted, setMuted] = useState(false);
+  const [restoreFocus, setRestoreFocus] = useState(false);
   const fullscreen = useFullscreen(containerRef);
+  const exitFullscreen = fullscreen.exit;
+  const fullscreenActive = useRef(fullscreen.active);
 
   const state = tileState(user, info, watched, room, error);
   const showVideo = state === "live";
   const quality = info?.quality ?? "high";
+  const showFooter = watched && user.streaming;
+
+  useEffect(() => {
+    fullscreenActive.current = fullscreen.active;
+  }, [fullscreen.active]);
+
+  // Leaving the tile (the streamer stopped, the channel changed) must not
+  // leave a stale desktop-window fullscreen behind. The room's DOM fullscreen
+  // is dropped by the browser when the element goes away; the window needs
+  // the explicit call from the hook.
+  useEffect(
+    () => () => {
+      if (fullscreenActive.current) {
+        void exitFullscreen();
+      }
+    },
+    [exitFullscreen],
+  );
+
+  // After "Stop watching" the stream is still live, so the tile stays with a
+  // Watch button. Put keyboard focus there once React has rendered it.
+  useEffect(() => {
+    if (restoreFocus && !watched && watchRef.current) {
+      watchRef.current.focus();
+      setRestoreFocus(false);
+    }
+  }, [restoreFocus, watched]);
+
+  function stopWatching() {
+    // Unsubscribe first: the other tile and the room must react immediately.
+    onUnwatch();
+    if (fullscreen.active) {
+      void fullscreen.exit();
+    }
+    setRestoreFocus(true);
+  }
 
   useEffect(() => {
     streamEngine.attachVideo(user.id, showVideo ? videoRef.current : null);
@@ -441,7 +527,7 @@ function RemoteTile({
           className="min-h-0 flex-1 object-contain"
         />
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 text-center">
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-3 pb-14 pt-12 text-center">
           <span className="flex size-10 items-center justify-center rounded-full border border-[var(--media-ember-border)] text-[var(--media-ember-ink)]">
             <Cast className="size-5" aria-hidden />
           </span>
@@ -455,7 +541,12 @@ function RemoteTile({
             {message}
           </p>
           {state === "idle" ? (
-            <Button size="xs" onClick={onWatch} data-testid={`watch-${user.id}`}>
+            <Button
+              ref={watchRef}
+              size="xs"
+              onClick={onWatch}
+              data-testid={`watch-${user.id}`}
+            >
               {t("streams.watch")}
             </Button>
           ) : null}
@@ -477,7 +568,7 @@ function RemoteTile({
             <Button
               size="xs"
               variant="secondary"
-              onClick={onUnwatch}
+              onClick={stopWatching}
               data-testid={`close-${user.id}`}
             >
               <X className="size-3" aria-hidden />
@@ -520,51 +611,64 @@ function RemoteTile({
           statsLabel={t("streams.stats")}
         />
       </header>
-      <footer className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/60 to-transparent px-3 py-2.5">
-        <Select
-          className="h-6 max-w-28 rounded-full border-white/25 bg-black/45 px-2 text-[10px] text-white"
-          value={quality}
-          aria-label={t("streams.quality")}
-          data-testid={`stream-quality-${user.id}`}
-          onChange={(event) =>
-            streamEngine.setQuality(
-              user.id,
-              event.target.value as StreamQualityMode,
-            )
-          }
-        >
-          <option value="high">{t("streams.qualityHigh")}</option>
-          <option value="auto">{t("streams.qualityAuto")}</option>
-          <option value="low">{t("streams.qualityLow")}</option>
-        </Select>
-        <span className="flex items-center gap-1.5 rounded-full bg-black/45 px-2 py-1">
+      {showFooter ? (
+        <footer className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-wrap items-center gap-2 bg-gradient-to-t from-black/60 to-transparent px-3 py-2.5">
           <button
             type="button"
-            aria-label={muted ? t("streams.unmute") : t("streams.mute")}
-            title={muted ? t("streams.unmute") : t("streams.mute")}
-            onClick={() => setMuted((value) => !value)}
-            className="text-white/80 hover:text-white"
+            onClick={stopWatching}
+            data-testid={`unwatch-${user.id}`}
+            aria-label={t("streams.unwatchHint", { name: user.nickname })}
+            title={t("streams.unwatchHint", { name: user.nickname })}
+            className="pointer-events-auto flex h-6 shrink-0 items-center gap-1 rounded-full bg-white/15 px-2 text-[10px] font-medium text-white transition-colors duration-150 hover:bg-white/25"
           >
-            {muted ? (
-              <VolumeX className="size-4" aria-hidden />
-            ) : (
-              <Volume2 className="size-4" aria-hidden />
-            )}
+            <EyeOff className="size-3" aria-hidden />
+            {t("streams.unwatch")}
           </button>
-          <Slider
-            className="h-1 max-w-28"
-            min={0}
-            max={200}
-            step={5}
-            value={volume}
-            aria-label={t("streams.volume")}
-            onChange={(event) => setVolume(Number(event.target.value))}
-          />
-          <span className="w-8 text-[10px] tabular-nums text-white/70">
-            {volume}%
+          <Select
+            className="pointer-events-auto h-6 max-w-28 rounded-full border-white/25 bg-black/45 px-2 text-[10px] text-white"
+            value={quality}
+            aria-label={t("streams.quality")}
+            data-testid={`stream-quality-${user.id}`}
+            onChange={(event) =>
+              streamEngine.setQuality(
+                user.id,
+                event.target.value as StreamQualityMode,
+              )
+            }
+          >
+            <option value="high">{t("streams.qualityHigh")}</option>
+            <option value="auto">{t("streams.qualityAuto")}</option>
+            <option value="low">{t("streams.qualityLow")}</option>
+          </Select>
+          <span className="pointer-events-auto flex items-center gap-1.5 rounded-full bg-black/45 px-2 py-1">
+            <button
+              type="button"
+              aria-label={muted ? t("streams.unmute") : t("streams.mute")}
+              title={muted ? t("streams.unmute") : t("streams.mute")}
+              onClick={() => setMuted((value) => !value)}
+              className="text-white/80 hover:text-white"
+            >
+              {muted ? (
+                <VolumeX className="size-4" aria-hidden />
+              ) : (
+                <Volume2 className="size-4" aria-hidden />
+              )}
+            </button>
+            <Slider
+              className="h-1 max-w-28"
+              min={0}
+              max={200}
+              step={5}
+              value={volume}
+              aria-label={t("streams.volume")}
+              onChange={(event) => setVolume(Number(event.target.value))}
+            />
+            <span className="w-8 text-[10px] tabular-nums text-white/70">
+              {volume}%
+            </span>
           </span>
-        </span>
-      </footer>
+        </footer>
+      ) : null}
       {statsOpen ? <StatsOverlay stats={info?.stats ?? null} /> : null}
     </section>
   );

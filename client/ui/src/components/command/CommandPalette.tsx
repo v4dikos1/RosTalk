@@ -110,9 +110,7 @@ function CommandPaletteBody() {
         label: self.voice.selfMuted ? t("palette.unmute") : t("palette.mute"),
         icon: self.voice.selfMuted ? Mic : MicOff,
         run: () => {
-          void runCoreAction(() =>
-            coreApi.setVoiceState({ selfMuted: !self.voice.selfMuted }),
-          );
+          void runCoreAction(() => coreApi.toggleVoiceState("mute"));
           close();
         },
       });
@@ -122,9 +120,7 @@ function CommandPaletteBody() {
         label: self.voice.selfDeafened ? t("palette.undeafen") : t("palette.deafen"),
         icon: self.voice.selfDeafened ? Volume2 : VolumeX,
         run: () => {
-          void runCoreAction(() =>
-            coreApi.setVoiceState({ selfDeafened: !self.voice.selfDeafened }),
-          );
+          void runCoreAction(() => coreApi.toggleVoiceState("deafen"));
           close();
         },
       });

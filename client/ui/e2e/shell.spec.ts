@@ -57,7 +57,7 @@ test.describe("window shell", () => {
 
   test("server settings are offered to an admin only", async ({ page }) => {
     await open(page, "theme=dark&lang=ru&channel=3");
-    await page.getByTestId("title-bar-server").click();
+    await page.getByTestId("server-name").click();
     await expect(page.getByTestId("server-actions-menu")).toBeVisible();
     await expect(page.getByTestId("server-menu-invite")).toBeVisible();
     await expect(page.getByTestId("server-menu-settings")).toBeVisible();
@@ -69,7 +69,7 @@ test.describe("window shell", () => {
     await expect(page.getByTestId("settings-dialog")).toHaveCount(0);
 
     await open(page, "theme=dark&lang=ru&channel=3&admin=0");
-    await page.getByTestId("title-bar-server").click();
+    await page.getByTestId("server-name").click();
     await expect(page.getByTestId("server-actions-menu")).toBeVisible();
     await expect(page.getByTestId("server-menu-settings")).toHaveCount(0);
     await expect(page.getByTestId("server-menu-leave")).toBeVisible();
@@ -84,9 +84,23 @@ test.describe("window shell", () => {
     await expect(page.getByTestId("server-menu-settings")).toBeVisible();
   });
 
+  test("the server identity lives only in the sidebar header", async ({
+    page,
+  }) => {
+    await open(page, "theme=dark&lang=ru&channel=3");
+    await expect(page.getByTestId("title-bar-brand")).toBeVisible();
+    await expect(page.getByTestId("title-bar")).not.toContainText("Очаг друзей");
+    await expect(page.getByTestId("title-bar")).not.toContainText("в сети");
+    await expect(page.getByTestId("server-name")).toContainText("Очаг друзей");
+    await expect(page.getByTestId("server-name")).toContainText("7 в сети");
+    await expect(page.getByTestId("server-switcher")).toBeVisible();
+    await expect(page.getByTestId("title-bar-search")).toBeVisible();
+    await expect(page.getByTestId("title-bar-minimize")).toBeVisible();
+  });
+
   test("the server menu opens the invite dialog", async ({ page }) => {
     await open(page, "theme=dark&lang=ru&channel=3");
-    await page.getByTestId("title-bar-server").click();
+    await page.getByTestId("server-name").click();
     await page.getByTestId("server-menu-invite").click();
     await expect(page.getByTestId("invite-dialog")).toBeVisible();
     await expect(page.getByTestId("invite-create")).toBeVisible();
@@ -144,7 +158,7 @@ test.describe("window shell", () => {
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("profile-menu")).toHaveCount(0);
 
-    await page.getByTestId("title-bar-server").click();
+    await page.getByTestId("server-name").click();
     await expect(page.getByTestId("server-actions-menu")).toBeVisible();
     await shot(page, "server-menu-dark-ru");
     await page.getByTestId("server-menu-settings").click();

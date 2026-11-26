@@ -49,6 +49,13 @@ test("150 % volume keeps the app mounted and failures are explicit", async ({
   const tile = page.getByTestId("stream-6");
   await expect(tile).toBeVisible();
 
+  // The quality/volume row belongs to a watched stream; start watching first.
+  const watch = tile.locator('[data-testid^="watch-"]');
+  if (await watch.isVisible()) {
+    await watch.click();
+  }
+  await expect(tile.getByTestId("unwatch-6")).toBeVisible();
+
   // `audio.volume` only accepts 0..1; 150 % used to throw IndexSizeError inside
   // a React effect and unmount the whole tree.
   const slider = tile.locator('input[type="range"]');
@@ -68,10 +75,6 @@ test("150 % volume keeps the app mounted and failures are explicit", async ({
 
   // The fixture points at an unreachable media URL: the tile has to say so
   // and offer a retry instead of a generic "source unavailable".
-  const watch = tile.locator('[data-testid^="watch-"]');
-  if (await watch.isVisible()) {
-    await watch.click();
-  }
   await expect(tile).toHaveAttribute("data-state", "failed", {
     timeout: 15_000,
   });

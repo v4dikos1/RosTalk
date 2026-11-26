@@ -12,10 +12,11 @@
 //! - no low-level hook installation, no injection, no memory reads, no driver,
 //!   no elevation — the same API a game itself uses for input.
 //!
-//! One hook per process: the engine binds and unbinds the push-to-talk key by
-//! checking the reported events, not by reinstalling the device registration.
+//! One hook per process at a time: changing the binding stops the previous
+//! registration and installs the new one, and the engine decides whether an
+//! event opens push-to-talk or toggles mute by checking the reported events.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::error::PlatformError;
 
@@ -29,6 +30,12 @@ pub enum InputEvent {
     /// code does not depend on the active layout: the key that produces `Л`
     /// in the Russian layout is the same `K` key Raw Input reports here.
     Key {
+        /// Raw Input device handle (`RAWINPUTHEADER.hDevice`).
+        ///
+        /// Process-local and opaque: it lets a listener keep held state per
+        /// device, so removing one mouse does not release a button held on
+        /// another.
+        device: DeviceId,
         /// Set-1 make code, see [`scan_code_for_code_name`].
         scan: u32,
         /// True on press, false on release.
@@ -36,15 +43,30 @@ pub enum InputEvent {
     },
     /// A mouse button changed state.
     Mouse {
+        /// Raw Input device handle (`RAWINPUTHEADER.hDevice`).
+        device: DeviceId,
         /// Which button.
         button: MouseButton,
         /// True on press, false on release.
         down: bool,
     },
+    /// Windows reported that an input device was removed.
+    ///
+    /// The device that held a bound key or button can disappear before the
+    /// release report arrives (a wireless mouse switched off, a controller
+    /// unplugged). A listener must drop the held state of this device only,
+    /// otherwise push-to-talk stays open until the next press.
+    DeviceRemoved {
+        /// Raw Input device handle that disappeared.
+        device: DeviceId,
+    },
 }
 
+/// Opaque process-local Raw Input device handle.
+pub type DeviceId = isize;
+
 /// Mouse buttons Raw Input reports to the app.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     Left,
     Right,
@@ -68,23 +90,57 @@ pub struct InputHook {
 impl InputHook {
     /// Stops the hook explicitly; dropping does the same.
     pub fn stop(mut self) {
+        self.shutdown();
+    }
+
+    fn shutdown(&mut self) {
         if let Some(stop) = self.stop.take() {
             stop();
         }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        // The handler must go away with the registration. `install` treats a
+        // present handler as "a registration is already running", so keeping it
+        // here made every later binding change fail with "only one global input
+        // registration is supported".
+        clear_handler();
     }
 }
 
 impl Drop for InputHook {
     fn drop(&mut self) {
-        if let Some(stop) = self.stop.take() {
-            stop();
-        }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.shutdown();
+    }
+}
+
+/// The active handler, if a registration is running.
+///
+/// Raw Input is installed and stopped one binding at a time (the engine rebinds
+/// push-to-talk and the global toggles together), so a plain slot is enough.
+static HANDLER: Mutex<Option<InputHandler>> = Mutex::new(None);
+
+/// Replaces the handler for the next registration.
+///
+/// Fails while a registration is still alive: two message threads would each
+/// receive every Raw Input report for the same process.
+fn set_handler(handler: InputHandler) -> Result<(), PlatformError> {
+    let mut slot = HANDLER
+        .lock()
+        .map_err(|_| PlatformError::InputHook("the input handler lock is poisoned".into()))?;
+    if slot.is_some() {
+        return Err(PlatformError::InputHook(
+            "only one global input registration is supported".into(),
+        ));
+    }
+    *slot = Some(handler);
+    Ok(())
+}
+
+/// Releases the handler after the message thread has stopped.
+fn clear_handler() {
+    if let Ok(mut slot) = HANDLER.lock() {
+        *slot = None;
     }
 }
 
@@ -355,14 +411,15 @@ fn mouse_events(flags: u16) -> impl Iterator<Item = (MouseButton, bool)> {
 
 #[cfg(not(windows))]
 mod imp {
-    use super::{InputHandler, InputHook, PlatformError};
+    use super::{set_handler, InputHandler, InputHook, PlatformError};
 
     /// Stub for platforms the MVP does not ship on (design 1). The app still
     /// compiles and runs; push-to-talk is simply unavailable.
     pub fn install(
-        _handler: InputHandler,
+        handler: InputHandler,
         _capture_keyboard: bool,
     ) -> Result<InputHook, PlatformError> {
+        set_handler(handler)?;
         Ok(InputHook {
             stop: None,
             thread: None,
@@ -374,7 +431,6 @@ mod imp {
 mod imp {
     use std::sync::atomic::{AtomicIsize, Ordering};
     use std::sync::mpsc;
-    use std::sync::OnceLock;
 
     use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -391,9 +447,14 @@ mod imp {
     };
 
     use super::{
-        keyboard_released, keyboard_scan, mouse_events, InputEvent, InputHandler, InputHook,
-        PlatformError,
+        keyboard_released, keyboard_scan, mouse_events, set_handler, DeviceId, InputEvent,
+        InputHandler, InputHook, PlatformError,
     };
+
+    /// `WM_INPUT_DEVICE_CHANGE`: a HID device arrived or was removed.
+    const WM_INPUT_DEVICE_CHANGE: u32 = 0x00FE;
+    /// `GIDC_REMOVAL` in the `wparam` of `WM_INPUT_DEVICE_CHANGE`.
+    const GIDC_REMOVAL: usize = 1;
 
     /// HID usage page 1 ("generic desktop controls").
     const HID_USAGE_PAGE_GENERIC: u16 = 0x01;
@@ -418,7 +479,6 @@ mod imp {
         }
     }
 
-    static HANDLER: OnceLock<InputHandler> = OnceLock::new();
     static MESSAGE_THREAD: AtomicIsize = AtomicIsize::new(0);
 
     /// Registers Raw Input on a dedicated thread with a message-only window.
@@ -426,15 +486,21 @@ mod imp {
         handler: InputHandler,
         capture_keyboard: bool,
     ) -> Result<InputHook, PlatformError> {
-        HANDLER.set(handler).map_err(|_| {
-            PlatformError::InputHook("only one global input registration is supported".into())
-        })?;
+        set_handler(handler)?;
 
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
-        let thread = std::thread::Builder::new()
+        let thread = match std::thread::Builder::new()
             .name("rostalk-input-raw".to_owned())
             .spawn(move || input_thread(ready_tx, capture_keyboard))
-            .map_err(|error| PlatformError::InputHook(format!("start input thread: {error}")))?;
+        {
+            Ok(thread) => thread,
+            Err(error) => {
+                super::clear_handler();
+                return Err(PlatformError::InputHook(format!(
+                    "start input thread: {error}"
+                )));
+            }
+        };
 
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(InputHook {
@@ -453,10 +519,12 @@ mod imp {
             }),
             Ok(Err(error)) => {
                 let _ = thread.join();
+                super::clear_handler();
                 Err(PlatformError::InputHook(error))
             }
             Err(_) => {
                 let _ = thread.join();
+                super::clear_handler();
                 Err(PlatformError::InputHook(
                     "the input thread stopped before reporting".into(),
                 ))
@@ -476,7 +544,10 @@ mod imp {
             class.hInstance = module as HINSTANCE;
             class.lpszClassName = class_name.as_ptr();
             if RegisterClassW(&class) == 0 {
-                let _ = ready.send(Err("RegisterClassW failed".into()));
+                let _ = ready.send(Err(format!(
+                    "RegisterClassW failed: {}",
+                    std::io::Error::last_os_error()
+                )));
                 MESSAGE_THREAD.store(0, Ordering::SeqCst);
                 return;
             }
@@ -499,7 +570,10 @@ mod imp {
             );
             if window.is_null() {
                 UnregisterClassW(class_name.as_ptr(), module as HINSTANCE);
-                let _ = ready.send(Err("CreateWindowExW failed".into()));
+                let _ = ready.send(Err(format!(
+                    "CreateWindowExW failed: {}",
+                    std::io::Error::last_os_error()
+                )));
                 MESSAGE_THREAD.store(0, Ordering::SeqCst);
                 return;
             }
@@ -519,9 +593,10 @@ mod imp {
                 std::mem::size_of::<RAWINPUTDEVICE>() as u32,
             );
             if registered == 0 {
+                let error = std::io::Error::last_os_error();
                 DestroyWindow(window);
                 UnregisterClassW(class_name.as_ptr(), module as HINSTANCE);
-                let _ = ready.send(Err("RegisterRawInputDevices failed".into()));
+                let _ = ready.send(Err(format!("RegisterRawInputDevices failed: {error}")));
                 MESSAGE_THREAD.store(0, Ordering::SeqCst);
                 return;
             }
@@ -568,6 +643,13 @@ mod imp {
         if message == WM_INPUT {
             // SAFETY: WM_INPUT carries an HRAWINPUT in lparam.
             unsafe { handle_raw_input(lparam) };
+        } else if message == WM_INPUT_DEVICE_CHANGE && wparam == GIDC_REMOVAL {
+            // The release report of a held key or button never arrives after
+            // the device is gone. Tell the listener which device disappeared
+            // so it can release exactly that device's state.
+            dispatch(InputEvent::DeviceRemoved {
+                device: lparam as DeviceId,
+            });
         }
         // DefWindowProc performs the Raw Input buffer cleanup the API requires.
         unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
@@ -591,6 +673,7 @@ mod imp {
         if read == u32::MAX || read == 0 {
             return;
         }
+        let device = raw.header.hDevice as DeviceId;
 
         match raw.header.dwType {
             RIM_TYPEKEYBOARD => {
@@ -604,7 +687,7 @@ mod imp {
                     return;
                 };
                 let down = !keyboard_released(keyboard.Flags);
-                dispatch(InputEvent::Key { scan, down });
+                dispatch(InputEvent::Key { device, scan, down });
             }
             RIM_TYPEMOUSE => {
                 // SAFETY: the header says the union holds a mouse report.
@@ -612,7 +695,11 @@ mod imp {
                 // SAFETY: `usButtonFlags` overlays the low word of `ulButtons`.
                 let flags = unsafe { mouse.Anonymous.Anonymous.usButtonFlags };
                 for (button, down) in mouse_events(flags) {
-                    dispatch(InputEvent::Mouse { button, down });
+                    dispatch(InputEvent::Mouse {
+                        device,
+                        button,
+                        down,
+                    });
                 }
             }
             _ => {}
@@ -620,8 +707,10 @@ mod imp {
     }
 
     fn dispatch(event: InputEvent) {
-        if let Some(handler) = HANDLER.get() {
-            handler(event);
+        if let Ok(slot) = super::HANDLER.lock() {
+            if let Some(handler) = slot.as_ref() {
+                handler(event);
+            }
         }
     }
 }
@@ -639,10 +728,12 @@ mod tests {
     #[test]
     fn event_shapes_are_constructible() {
         let key = InputEvent::Key {
+            device: 1,
             scan: 0x25,
             down: true,
         };
         let mouse = InputEvent::Mouse {
+            device: 2,
             button: MouseButton::X2,
             down: false,
         };
@@ -797,7 +888,29 @@ mod tests {
     #[test]
     #[ignore = "registers real Raw Input; run on Windows manually"]
     fn raw_input_registers_and_stops() {
+        let _serial = raw_input_test_lock();
         let hook = install(std::sync::Arc::new(|_| {}), true).expect("install raw input");
         drop(hook);
+    }
+
+    #[test]
+    #[ignore = "registers real Raw Input; run on Windows manually"]
+    fn raw_input_can_be_reinstalled_with_another_binding() {
+        let _serial = raw_input_test_lock();
+        // Changing the push-to-talk binding stops the first registration and
+        // installs a second one in the same process (stage P24).
+        let first = install(std::sync::Arc::new(|_| {}), false).expect("first install");
+        drop(first);
+        let second = install(std::sync::Arc::new(|_| {}), true).expect("second install");
+        drop(second);
+        let third = install(std::sync::Arc::new(|_| {}), false).expect("third install");
+        drop(third);
+    }
+
+    /// Raw Input is one registration per process; the ignored tests run in
+    /// parallel threads of one test binary, so they take turns.
+    fn raw_input_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }

@@ -19,11 +19,14 @@ import type {
   StreamAudioState,
   StreamAudioSupport,
   StreamCredentialsView,
+  NativeStreamMessage,
+  NativeStreamSupport,
   UpdateCheck,
   UpdateProgress,
   VoiceEvent,
   VoiceState,
   VoiceStatePatch,
+  VoiceToggle,
 } from "../api";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -127,8 +130,60 @@ export const tauriCoreApi: CoreApi = {
     await commands.setWatching(streamerIds);
   },
 
+  async nativeStreamSupport(): Promise<NativeStreamSupport> {
+    return commands.nativeStreamSupport();
+  },
+
+  async startNativeStream(
+    runId: string,
+    channelId: number,
+    preset: "720p30" | "1080p30",
+    includeAudio: boolean,
+  ): Promise<void> {
+    await commands.startNativeStream(
+      channelId,
+      runId,
+      preset,
+      includeAudio,
+    );
+  },
+
+  async stopNativeStream(runId: string | null): Promise<void> {
+    await commands.stopNativeStream(runId);
+  },
+
+  async getNativeStreamState(): Promise<NativeStreamMessage | null> {
+    return commands.getNativeStreamState() as unknown as NativeStreamMessage | null;
+  },
+
+  subscribeNativeStream(
+    listener: (message: NativeStreamMessage) => void,
+  ): () => void {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void events.nativeStreamEventMessage
+      .listen((event) => {
+        listener(event.payload as unknown as NativeStreamMessage);
+      })
+      .then((stop) => {
+        if (disposed) {
+          stop();
+        } else {
+          unlisten = stop;
+        }
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  },
+
   async setVoiceState(patch: VoiceStatePatch): Promise<void> {
     await commands.setVoiceState(patch);
+  },
+
+  async toggleVoiceState(field: VoiceToggle): Promise<void> {
+    await commands.toggleVoiceState(field);
   },
 
   async setNickname(nickname: string): Promise<void> {

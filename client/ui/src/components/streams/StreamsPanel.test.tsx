@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -121,6 +122,52 @@ describe("StreamsPanel states", () => {
     expect(screen.getByTestId("stream-state-6")).toHaveTextContent(
       "Переподключаемся…",
     );
+  });
+
+  it("stops only the chosen watched stream from its tile", async () => {
+    const unwatch = vi.fn();
+    const second = {
+      userId: 7,
+      identity: "7:stream",
+      hasVideo: true,
+      hasAudio: true,
+      subscribed: true,
+      videoReady: true,
+      audioReady: true,
+      quality: "high" as const,
+      stats: null,
+    };
+    const state = structuredClone(fixtureState);
+    state.users = state.users.map((user) =>
+      user.id === 7 ? { ...user, streaming: true } : user,
+    );
+    useCoreStore.setState({
+      state,
+      hydrated: true,
+      pending: [],
+      actionError: null,
+    });
+    useStreamStore.setState({
+      ...baseSnapshot(),
+      watching: [6, 7],
+      streams: [
+        ...(baseSnapshot().streams ?? []),
+        second,
+      ],
+      unwatch,
+    });
+    renderPanel();
+
+    const button = screen.getByTestId("unwatch-6");
+    expect(button).toHaveTextContent("Перестать смотреть");
+    expect(button).toHaveAccessibleName(
+      "Перестать смотреть стрим Kirill и выключить его звук",
+    );
+    await userEvent.click(button);
+    expect(unwatch).toHaveBeenCalledTimes(1);
+    expect(unwatch).toHaveBeenCalledWith(6);
+    // The second watched stream keeps its own tile and controls.
+    expect(screen.getByTestId("unwatch-7")).toBeInTheDocument();
   });
 
   it("keeps a watched tile when the stream ends", async () => {
@@ -286,5 +333,115 @@ describe("StreamsPanel fullscreen", () => {
         screen.getByRole("button", { name: "Во весь экран" }),
       ).toBeInTheDocument();
     });
+  });
+
+  it("leaves fullscreen, unwatches only the chosen tile and restores focus", async () => {
+    const unwatch = vi.fn((userId: number) => {
+      // The real engine removes just this id and keeps reporting the rest.
+      useStreamStore.setState({ watching: [7] });
+      void userId;
+    });
+    const state = structuredClone(fixtureState);
+    state.users = state.users.map((user) =>
+      user.id === 7 ? { ...user, streaming: true } : user,
+    );
+    useCoreStore.setState({
+      state,
+      hydrated: true,
+      pending: [],
+      actionError: null,
+    });
+    const localBefore = structuredClone(useStreamStore.getState().local);
+    useStreamStore.setState({
+      ...baseSnapshot(),
+      watching: [6, 7],
+      streams: [
+        ...(baseSnapshot().streams ?? []),
+        {
+          userId: 7,
+          identity: "7:stream",
+          hasVideo: true,
+          hasAudio: true,
+          subscribed: true,
+          videoReady: true,
+          audioReady: true,
+          quality: "high",
+          stats: null,
+        },
+      ],
+      unwatch,
+    });
+    renderPanel();
+
+    const tile = screen.getByTestId("stream-6");
+    fireEvent.click(within(tile).getByRole("button", { name: "Во весь экран" }));
+    await waitFor(() => expect(document.fullscreenElement).toBe(tile));
+
+    const stop = within(tile).getByTestId("unwatch-6");
+    stop.focus();
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() => expect(document.fullscreenElement).toBeNull());
+    expect(tile).not.toHaveAttribute("data-fullscreen");
+    expect(unwatch).toHaveBeenCalledTimes(1);
+    expect(unwatch).toHaveBeenCalledWith(6);
+    await waitFor(() => expect(within(tile).getByTestId("watch-6")).toHaveFocus());
+    expect(screen.getByTestId("stream-7")).toHaveAttribute("data-state", "live");
+    expect(screen.getByTestId("unwatch-7")).toBeInTheDocument();
+    expect(useStreamStore.getState().local).toEqual(localBefore);
+  });
+
+  it("drops fullscreen and focuses the panel when the ended tile disappears", async () => {
+    const unwatch = vi.fn(() => useStreamStore.setState({ watching: [] }));
+    const state = structuredClone(fixtureState);
+    state.users = state.users.map((user) =>
+      user.id === 6 ? { ...user, streaming: false } : user,
+    );
+    useCoreStore.setState({
+      state,
+      hydrated: true,
+      pending: [],
+      actionError: null,
+    });
+    useStreamStore.setState({ ...baseSnapshot(), streams: [], watching: [6], unwatch });
+    renderPanel();
+
+    const tile = screen.getByTestId("stream-6");
+    fireEvent.click(within(tile).getByRole("button", { name: "Во весь экран" }));
+    await waitFor(() => expect(document.fullscreenElement).toBe(tile));
+
+    fireEvent.click(within(tile).getByTestId("close-6"));
+    await waitFor(() => expect(document.fullscreenElement).toBeNull());
+    expect(screen.queryByTestId("stream-6")).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId("streams-panel")).toHaveFocus(),
+    );
+    expect(unwatch).toHaveBeenCalledWith(6);
+  });
+
+  it("exits fullscreen again after stop, rewatch and unmount", async () => {
+    const unwatch = vi.fn(() => useStreamStore.setState({ watching: [] }));
+    useStreamStore.setState({ ...baseSnapshot(), unwatch });
+    watchStreamInChannel.mockImplementationOnce(async () => {
+      useStreamStore.setState({ watching: [6] });
+    });
+    renderPanel();
+
+    const tile = screen.getByTestId("stream-6");
+    fireEvent.click(within(tile).getByRole("button", { name: "Во весь экран" }));
+    await waitFor(() => expect(document.fullscreenElement).toBe(tile));
+
+    await userEvent.click(within(tile).getByTestId("unwatch-6"));
+    await waitFor(() => expect(document.fullscreenElement).toBeNull());
+    await userEvent.click(within(tile).getByTestId("watch-6"));
+    await waitFor(() => expect(within(tile).getByTestId("unwatch-6")).toBeVisible());
+
+    fireEvent.click(within(tile).getByRole("button", { name: "Во весь экран" }));
+    await waitFor(() => expect(tile).toHaveAttribute("data-fullscreen", "true"));
+
+    // The tile saw a stop earlier; a later fullscreen must still be left when
+    // the tile disappears (the old single `stopped` flag skipped this).
+    cleanup();
+    await waitFor(() => expect(document.fullscreenElement).toBeNull());
   });
 });

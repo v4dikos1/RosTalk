@@ -52,6 +52,13 @@ function prepare() {
       micTest: false,
       gate: { mode: "voiceActivation", threshold_db: -45, hold_ms: 300 },
       pushToTalk: { hook: "active", binding: "X1/X2", error: null },
+      globalInput: {
+        registered: true,
+        keyboardCaptured: false,
+        pushToTalk: true,
+        toggleMute: false,
+        toggleDeafen: false,
+      },
       inputDevice: null,
       outputDevice: null,
       error: null,

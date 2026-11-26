@@ -5281,7 +5281,7 @@ dependencies = [
 
 [[package]]
 name = "rostalk"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "log",
  "rfd",
@@ -5301,6 +5301,7 @@ dependencies = [
  "tauri-plugin-window-state",
  "tauri-specta",
  "tempfile",
+ "tokio",
  "url",
  "webview2-com",
  "windows-sys 0.61.2",
@@ -5379,7 +5380,7 @@ dependencies = [
 
 [[package]]
 name = "rostalk-server-setup"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "log",
  "rfd",
@@ -5420,6 +5421,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.29.0",
  "url",
+ "windows",
+ "windows-future",
  "windows-sys 0.61.2",
 ]
 

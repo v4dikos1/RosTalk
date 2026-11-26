@@ -25,8 +25,8 @@ pub use export::{
 };
 pub use hotkey::{
     code_name_for_scan, install as install_input_hook, is_supported as input_hook_supported,
-    key_name_for_scan, scan_code_for_code_name, scan_code_for_key_name, InputEvent, InputHandler,
-    InputHook, MouseButton, SCAN_EXTENDED,
+    key_name_for_scan, scan_code_for_code_name, scan_code_for_key_name, DeviceId, InputEvent,
+    InputHandler, InputHook, MouseButton, SCAN_EXTENDED,
 };
 pub use identity::Identity;
 pub use store::{IdentityVault, KeyringStore, MemoryStore, SecretStore};

@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { coreApi, isDesktop } from "@/core";
 import {
   StreamEngine,
+  type NativeStreamBridge,
   type StreamAudioBridge,
   type StreamEngineSnapshot,
   type StreamPresetName,
@@ -24,6 +25,26 @@ const coreStreamAudio: StreamAudioBridge | undefined = isDesktop
   : undefined;
 
 /**
+ * Optional native WGC publisher (stage P16). Only the desktop shell has it;
+ * the browser preview reports "unsupported" and the dialog keeps WebView2.
+ */
+const nativeStream: NativeStreamBridge | undefined = isDesktop
+  ? {
+      support: () => coreApi.nativeStreamSupport(),
+      start: (options) =>
+        coreApi.startNativeStream(
+          options.runId,
+          options.channelId,
+          options.preset,
+          options.includeAudio,
+        ),
+      stop: (runId) => coreApi.stopNativeStream(runId),
+      stopAll: () => coreApi.stopNativeStream(null),
+      subscribe: (listener) => coreApi.subscribeNativeStream(listener),
+    }
+  : undefined;
+
+/**
  * Mirror of the screen-share engine (stage 5.1).
  *
  * The engine owns the LiveKit room and the media tracks; the UI only reads a
@@ -33,6 +54,7 @@ export const streamEngine = new StreamEngine({
   requestStreamCredentials: (channelId) =>
     coreApi.requestStreamCredentials(channelId),
   ...(coreStreamAudio ? { audio: coreStreamAudio } : {}),
+  ...(nativeStream ? { native: nativeStream } : {}),
   setWatching: (streamerIds) => coreApi.setWatching(streamerIds),
 });
 
@@ -40,6 +62,7 @@ interface StreamMirror extends StreamEngineSnapshot {
   start: (options: {
     preset: StreamPresetName;
     includeAudio: boolean;
+    native?: boolean;
   }) => Promise<void>;
   stop: () => Promise<void>;
   watch: (userId: number) => Promise<void>;

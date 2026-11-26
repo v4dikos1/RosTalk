@@ -265,6 +265,72 @@ fn push_to_talk_silences_the_microphone_loop() {
     );
 }
 
+/// A held push-to-talk key survives an audio rebuild, and mic test with it.
+///
+/// The rebuild opens a fresh `SharedAudio`; restoring the button and the
+/// mic-test loop from the engine state keeps the tract open while the key is
+/// still held (stage P25 rework). Releasing afterwards must close it again.
+#[test]
+fn a_held_push_to_talk_key_and_mic_test_survive_an_audio_rebuild() {
+    use rostalk_voice::SoundSettings;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output = dir.path().join("ptt-rebuild.wav");
+    let (events, _events_rx) = std::sync::mpsc::channel();
+    let sink: Arc<dyn Fn(VoiceEvent) + Send + Sync> = Arc::new(move |event| {
+        let _ = events.send(event);
+    });
+    let config = VoiceConfig {
+        gate: GateMode::PushToTalk,
+        processing: tone_processing(),
+        test: Some(TestAudioConfig {
+            tone_hz: Some(440.0),
+            input_wav: None,
+            output_wav: Some(output.clone()),
+            ..TestAudioConfig::default()
+        }),
+        sounds: SoundSettings {
+            enabled: false,
+            volume: 0.0,
+            ..SoundSettings::default()
+        },
+        ..VoiceConfig::default()
+    };
+    let voice = rostalk_voice::start(config, sink).expect("voice engine");
+
+    voice.set_mic_test(true).expect("mic test");
+    voice.set_push_to_talk(true).expect("push-to-talk down");
+    std::thread::sleep(Duration::from_millis(800));
+    // A device change rebuilds the tract while the key is still held.
+    voice
+        .set_input_device(Some("test-rebuild".to_owned()))
+        .expect("device change");
+    std::thread::sleep(Duration::from_millis(1500));
+    voice.set_push_to_talk(false).expect("push-to-talk up");
+    std::thread::sleep(Duration::from_millis(800));
+    voice.shutdown();
+    std::thread::sleep(Duration::from_millis(300));
+
+    // The new runtime opens the same recording path with `create`, so the file
+    // now starts at the rebuild; its own timeline is what this test measures.
+    let samples = read_wav(&output);
+    let rebuilt = rms_window(&samples, 0.3, 1.2);
+    let released = rms_window(&samples, 1.8, 2.2);
+    eprintln!(
+        "ptt rebuild rms: held after rebuild {rebuilt:.4}, released {released:.4} \
+         ({} samples)",
+        samples.len()
+    );
+    assert!(
+        rebuilt > 0.01,
+        "the rebuilt tract lost the held push-to-talk key and mic test: rms {rebuilt:.4}"
+    );
+    assert!(
+        released < 0.002,
+        "the loop kept playing after the release: rms {released:.4}"
+    );
+}
+
 /// The engine starts in the state saved in the profile after a restart.
 ///
 /// `create_voice` passes the stored flags into `VoiceConfig`; this test proves

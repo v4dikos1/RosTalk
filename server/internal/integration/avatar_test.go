@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/v4dikos1/RosTalk/server/internal/avatars"
+	"github.com/v4dikos1/RosTalk/server/internal/store"
 )
 
 // TestAvatarsOverHTTPS covers the whole P11 path on a real server: upload,
@@ -121,30 +123,62 @@ func TestAvatarsOverHTTPS(t *testing.T) {
 		t.Fatalf("oversized status = %d, want 413", status)
 	}
 
-	// A member may not reset someone else's picture.
-	status, _, _ = call(http.MethodDelete, fmt.Sprintf("/api/v1/members/%d/avatar", adminID),
-		member.welcome.GetHttpToken(), "", nil)
-	if status != http.StatusForbidden {
-		t.Fatalf("member reset status = %d, want 403", status)
+	// Stage P27: nobody may reset another user's avatar, not even with
+	// manage_server. The former route is gone, so even the administrator gets
+	// a 404, and the target's hash, stored file and presence stay unchanged.
+	for _, token := range []string{member.welcome.GetHttpToken(), adminToken} {
+		status, _, _ = call(http.MethodDelete, fmt.Sprintf("/api/v1/members/%d/avatar", adminID), token, "", nil)
+		if status != http.StatusNotFound {
+			t.Fatalf("legacy reset status = %d, want 404", status)
+		}
 	}
-
-	// An administrator may.
-	status, _, _ = call(http.MethodDelete, fmt.Sprintf("/api/v1/members/%d/avatar", adminID), adminToken, "", nil)
-	if status != http.StatusNoContent {
-		t.Fatalf("admin reset status = %d, want 204", status)
+	status, _, after := call(http.MethodGet, "/api/v1/avatars/"+created.AvatarHash, member.welcome.GetHttpToken(), "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("avatar after a legacy reset = %d, want 200", status)
 	}
-	status, _, _ = call(http.MethodGet, "/api/v1/avatars/"+created.AvatarHash, member.welcome.GetHttpToken(), "", nil)
-	if status != http.StatusNotFound {
-		t.Fatalf("read of a reset avatar = %d, want 404", status)
+	if !bytes.Equal(after, stored) {
+		t.Fatal("a legacy reset changed the stored avatar bytes")
 	}
 	waitFor(t, func() bool {
 		for _, user := range app.Hub.SnapshotUsers() {
 			if user.UserID == int64(adminID) {
-				return user.AvatarHash == ""
+				return user.AvatarHash == created.AvatarHash
 			}
 		}
 		return false
-	}, "the reset avatar hash stayed in the presence")
+	}, "a legacy reset changed the avatar hash in the presence")
+
+	// Audit entries written by the old route stay readable after the route is
+	// removed: the admin journal still shows member.avatar_reset.
+	if _, err := app.Store.AddAuditEntry(context.Background(), store.AuditOptions{
+		ActorID:      int64(adminID),
+		ActorName:    "legacy-admin",
+		Action:       "member.avatar_reset",
+		TargetUserID: int64(member.welcome.GetSelfUserId()),
+	}); err != nil {
+		t.Fatalf("add a historical audit entry: %v", err)
+	}
+	status, _, body = call(http.MethodGet, "/api/v1/audit?action=member.avatar_reset&limit=10", adminToken, "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("audit status = %d: %s", status, body)
+	}
+	var audit struct {
+		Entries []struct {
+			Action string `json:"action"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(body, &audit); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	foundLegacy := false
+	for _, entry := range audit.Entries {
+		if entry.Action == "member.avatar_reset" {
+			foundLegacy = true
+		}
+	}
+	if !foundLegacy {
+		t.Fatalf("the historical member.avatar_reset entry is not readable: %s", body)
+	}
 
 	// Unknown and malformed hashes are 404, never a path lookup.
 	for _, hash := range []string{strings.Repeat("0", 64), "..", "not-a-hash"} {

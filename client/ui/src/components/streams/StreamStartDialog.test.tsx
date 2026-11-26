@@ -27,6 +27,8 @@ describe("StreamStartDialog", () => {
         hasAudio: false,
         audioPath: null,
         stats: null,
+        native: false,
+        nativeStatus: null,
       },
       error: null,
       start,
@@ -59,7 +61,21 @@ describe("StreamStartDialog", () => {
     expect(start).toHaveBeenCalledWith({
       preset: "1080p30",
       includeAudio: true,
+      native: false,
     });
+  });
+
+  it("keeps the experimental native mode off and unsupported outside the desktop shell", async () => {
+    render(
+      <StreamStartDialog open onOpenChange={() => {}} channelId={4} />,
+    );
+
+    const toggle = screen.getByTestId("stream-native-toggle");
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByTestId("stream-native-hint")).toHaveTextContent(
+      /desktop|клиент/i,
+    );
   });
 
   it("offers the native source preset advertised for the HQ permission", async () => {
@@ -87,6 +103,7 @@ describe("StreamStartDialog", () => {
     expect(start).toHaveBeenCalledWith({
       preset: "source",
       includeAudio: true,
+      native: false,
     });
   });
 });

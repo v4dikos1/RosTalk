@@ -1875,7 +1875,7 @@ fn measure_noise_model(
     let errors = Arc::new(AtomicU64::new(0));
     let mut processor = ApmProcessor::new(processing, errors.clone());
     let mut output = Vec::with_capacity(input.len());
-    for chunk in input.chunks_exact(FRAME_SAMPLES) {
+    for chunk in input.as_chunks::<FRAME_SAMPLES>().0 {
         let mut frame = [0i16; FRAME_SAMPLES];
         for (slot, value) in frame.iter_mut().zip(chunk) {
             *slot = (value.clamp(-1.0, 1.0) * 32_767.0) as i16;
@@ -1968,7 +1968,7 @@ fn deepfilter_stage_delay_is_within_forty_milliseconds() {
     let frames = speech.len() / FRAME_SAMPLES;
     let mut filter = rostalk_voice::deepfilter::DeepFilter::new();
     let mut output = Vec::with_capacity(frames * FRAME_SAMPLES);
-    for chunk in speech.chunks_exact(FRAME_SAMPLES) {
+    for chunk in speech.as_chunks::<FRAME_SAMPLES>().0 {
         let mut frame = [0i16; FRAME_SAMPLES];
         for (slot, value) in frame.iter_mut().zip(chunk) {
             *slot = (value * 32_767.0) as i16;
@@ -2027,7 +2027,7 @@ fn deepfilter_costs_a_small_share_of_a_core() {
         *sample = (f32::from(noise) + voice) as i16;
     }
     let mut frame = [0i16; FRAME_SAMPLES];
-    for chunk in source.chunks_exact(FRAME_SAMPLES).take(100) {
+    for chunk in source.as_chunks::<FRAME_SAMPLES>().0.iter().take(100) {
         frame.copy_from_slice(chunk);
         filter.process_frame(&mut frame);
     }
@@ -2139,4 +2139,97 @@ fn the_noise_model_switches_on_the_fly_without_gaps() {
         "only {} samples were published in 7 s",
         samples.len()
     );
+}
+
+// ------------------------------------------------------------------- P25 ---
+//
+// Quiet participants. The leveler is the receive-side fix for headsets whose
+// speech arrives far below a normal one. The old +12 dB ceiling stopped at
+// -34 dBFS, so a -40..-46 dBFS friend stayed 6..14 dB quieter even with
+// leveling on. These numbers go to ADR 0037.
+
+/// Offline leveler run on the real speech fixture: input level, settled output
+/// level, applied gain and peak, plus the old +12 dB ceiling for comparison.
+#[test]
+#[ignore = "quality measurement: run via make test-voice-quality"]
+fn leveling_brings_quiet_speech_to_the_common_target_without_clipping() {
+    use rostalk_voice::leveler::{Leveler, MAX_GAIN_DB, MIN_GAIN_DB, TARGET_DB};
+
+    let Some(fixture) = speech_fixture_samples() else {
+        return;
+    };
+
+    eprintln!(
+        "input speech  excerpt  output speech  gain dB  peak dBFS  old output (12 dB cap)  clipping"
+    );
+    for excerpt_db in [-46.0f32, -40.0, -30.0, -22.0, -12.0] {
+        let speech = quiet_speech(&fixture, excerpt_db, 10.0);
+        let mut leveler = Leveler::new();
+        let mut output = Vec::with_capacity(speech.len());
+        for chunk in speech.as_chunks::<FRAME_SAMPLES>().0 {
+            let mut frame = [0i16; FRAME_SAMPLES];
+            for (slot, value) in frame.iter_mut().zip(chunk) {
+                *slot = (value.clamp(-1.0, 1.0) * 32_767.0) as i16;
+            }
+            leveler.process(&mut frame, true);
+            output.extend(frame.iter().map(|value| f32::from(*value) / 32_767.0));
+        }
+        // The slew reaches +24 dB in eight seconds; measure the last 1.5 s.
+        let tail_start = output.len().saturating_sub(SAMPLE_RATE as usize * 3 / 2);
+        let tail = &output[tail_start..];
+        let tail_input = &speech[tail_start.min(speech.len())..];
+        // `quiet_speech` scales the whole excerpt, pauses included, while the
+        // leveler only sees frames above -50 dBFS. Compare the same active
+        // frames on both sides so the table describes speech, not silence.
+        let floor = f64::from(rostalk_voice::frame::db_to_amplitude(-50.0));
+        let mut active_in = Vec::new();
+        let mut active_out = Vec::new();
+        for (input, output) in tail_input
+            .chunks(FRAME_SAMPLES)
+            .zip(tail.chunks(FRAME_SAMPLES))
+        {
+            if rms(input) > floor {
+                active_in.extend_from_slice(input);
+                active_out.extend_from_slice(output);
+            }
+        }
+        let input_db = rms_db(rms(&active_in));
+        let output_db = rms_db(rms(&active_out));
+        let peak_db = rms_db(
+            tail.iter()
+                .map(|sample| f64::from(sample.abs()))
+                .fold(0.0, f64::max),
+        );
+        let legacy_gain = (TARGET_DB - input_db as f32).clamp(MIN_GAIN_DB, 12.0);
+        let clipped = clipping(output.as_slice());
+        eprintln!(
+            "{input_db:>10.1}  {excerpt_db:>7.1}  {output_db:>12.1}  {:>7.1}  {peak_db:>8.1}  \
+             {:>23.1}  {clipped:>8}",
+            leveler.gain_db(),
+            input_db as f32 + legacy_gain,
+        );
+        assert_eq!(
+            clipped, 0,
+            "the leveler clipped {clipped} samples at {input_db} dBFS"
+        );
+        assert!(
+            peak_db <= -0.9,
+            "peak {peak_db:.1} dBFS is above the -1 dBFS limiter ceiling"
+        );
+        assert!(
+            leveler.gain_db() <= MAX_GAIN_DB + 0.01,
+            "gain {:.1} dB exceeds the limit",
+            leveler.gain_db()
+        );
+        if input_db >= -47.0 {
+            assert!(
+                (output_db - f64::from(TARGET_DB)).abs() < 2.0,
+                "{input_db:.1} dBFS speech settled at {output_db:.1} dBFS, target {TARGET_DB} dBFS"
+            );
+            assert!(
+                leveler.gain_db() > 12.0 || input_db >= -34.0,
+                "a quiet voice at {input_db:.1} dBFS used only the old 12 dB ceiling"
+            );
+        }
+    }
 }

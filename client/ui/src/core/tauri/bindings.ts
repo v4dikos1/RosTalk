@@ -66,8 +66,48 @@ export const commands = {
 	 *  invents a viewer list of its own.
 	 */
 	setWatching: (streamerIds: number[], options?: InvokeOptions) => __TAURI_INVOKE<null>("set_watching", { streamerIds }, options),
+	/**
+	 *  Whether this machine supports the optional native mode. This is an OS/API
+	 *  probe, not a hardware-encoder check.
+	 */
+	nativeStreamSupport: (options?: InvokeOptions) => __TAURI_INVOKE<NativeStreamSupport_Serialize>("native_stream_support", undefined, options),
+	/**
+	 *  Starts the native publisher after the system picker chooses a source.
+	 * 
+	 *  The command returns once the run is registered and the worker is queued;
+	 *  `Picking`, `Publishing`, `Cancelled`, `Error` and `Stopped` arrive as
+	 *  events. No capture starts on a cancelled picker, and the caller must not
+	 *  fall back to WebView2 by itself.
+	 */
+	startNativeStream: (channelId: number, runId: string, preset: string, includeAudio: boolean, options?: InvokeOptions) => __TAURI_INVOKE<null>("start_native_stream", { channelId, runId, preset, includeAudio }, options),
+	/**
+	 *  Stops the native publisher and the computer audio it owns. With a run id
+	 *  only that caller's run is stopped; `None` is the privileged app-wide path
+	 *  used by shutdown. The worker emits `Stopped`; the UI mirrors that event.
+	 */
+	stopNativeStream: (runId: string | null, options?: InvokeOptions) => __TAURI_INVOKE<null>("stop_native_stream", { runId }, options),
+	/**
+	 *  Last native event, for a dialog that opens after the stream started. The
+	 *  envelope carries the run id so a stale dialog cannot apply it to a new run.
+	 */
+	getNativeStreamState: (options?: InvokeOptions) => __TAURI_INVOKE<NativeStreamEventMessage | null>("get_native_stream_state", undefined, options),
+	/**
+	 *  Token-free counters of the active run: WGC acquired/stored, frames fed and
+	 *  cumulative outbound RTP per simulcast layer. Used by the live measurement
+	 *  harness; it carries neither a token nor a URL.
+	 */
+	nativeStreamStats: (options?: InvokeOptions) => __TAURI_INVOKE<NativeStreamStats | null>("native_stream_stats", undefined, options),
 	/**  Changes own microphone/deafen/away flags. */
 	setVoiceState: (patch: VoiceStatePatch_Deserialize, options?: InvokeOptions) => __TAURI_INVOKE<null>("set_voice_state", { patch }, options),
+	/**
+	 *  Toggles own microphone or playback through the shared serialized path.
+	 * 
+	 *  The control-bar button and the global hotkey worker call the same core
+	 *  method, which reads the latest persisted `VoicePreferences`; the lock also
+	 *  covers the engine update so a manual press and a hotkey cannot apply
+	 *  conflicting values.
+	 */
+	toggleVoiceState: (field: VoiceToggle, options?: InvokeOptions) => __TAURI_INVOKE<null>("toggle_voice_state", { field }, options),
 	/**  Changes the display name on the server and saves it in the local profile. */
 	setNickname: (nickname: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("set_nickname", { nickname }, options),
 	/**  Forgets a saved server. */
@@ -146,8 +186,9 @@ export const commands = {
 	/**
 	 *  Changes the global push-to-talk binding and persists it.
 	 * 
-	 *  Only single keys and the X1/X2 default are supported by Raw Input; the
-	 *  settings window records the value. `null` restores the mouse-button pair.
+	 *  Only single keys, single mouse buttons and the X1/X2 pair are supported by
+	 *  Raw Input; the settings window records the value. `null` restores the
+	 *  mouse-button pair.
 	 */
 	setVoicePttBinding: (accelerator: string | null, options?: InvokeOptions) => __TAURI_INVOKE<null>("set_voice_ptt_binding", { accelerator }, options),
 	/**
@@ -223,6 +264,7 @@ export const commands = {
 export const events = {
 	coreStateEvent: makeEvent<CoreStateEvent_Serialize, CoreStateEvent_Deserialize>("core-state-event"),
 	deepLinkEvent: makeEvent<DeepLinkEvent, DeepLinkEvent>("deep-link-event"),
+	nativeStreamEventMessage: makeEvent<NativeStreamEventMessage, NativeStreamEventMessage>("native-stream-event-message"),
 	updateProgressEvent: makeEvent<UpdateProgressEvent_Serialize, UpdateProgressEvent_Deserialize>("update-progress-event"),
 	voiceEventMessage: makeEvent<VoiceEventMessage_Serialize, VoiceEventMessage_Deserialize>("voice-event-message"),
 };
@@ -1097,6 +1139,30 @@ threshold_db: number | null;
 /**  How long the gate stays open after the level drops, ms. */
 hold_ms: number };
 
+/**
+ *  Which actions the global Raw Input registration actually delivers.
+ * 
+ *  Push-to-talk has its own [`PttStatus`] with the effective label and error;
+ *  this only says whether each action reached the router. Mute, deafen and
+ *  push-to-talk are independent: an invalid push-to-talk binding must not turn
+ *  the valid toggles into window-only shortcuts.
+ */
+export type GlobalInputStatus = {
+	/**  True while the Raw Input registration is running. */
+	registered: boolean,
+	/**
+	 *  True when the registration captures the keyboard (an explicit key or
+	 *  the explicit background-combination opt-in); mouse-only stays false.
+	 */
+	keyboardCaptured: boolean,
+	/**  Push-to-talk reached the router. */
+	pushToTalk: boolean,
+	/**  Mute reached the router. */
+	toggleMute: boolean,
+	/**  Deafen reached the router. */
+	toggleDeafen: boolean,
+};
+
 /**  Actions that can be bound to a keyboard shortcut or a mouse button. */
 export type HotkeyAction = "pushToTalk" | "toggleMute" | "toggleDeafen" | "commandPalette" | "openSettings" | "leaveChannel";
 
@@ -1189,6 +1255,114 @@ export type MessageView = {
 	editedAtUnixMs: number,
 	attachments: AttachmentView[],
 	mentionUserIds: number[],
+};
+
+/**  Events the UI mirrors. They are token-free and safe to log. */
+export type NativeStreamEvent = 
+/**  The system picker is open; no capture has started. */
+{ type: "picking" } | 
+/**  A source was chosen and the track is published. */
+{ type: "publishing"; preset: string; cursorDisabled: boolean; borderRemoved: boolean } | 
+/**
+ *  The user cancelled the system picker. No capture and no room were
+ *  created; the UI must not silently switch to WebView2.
+ */
+{ type: "cancelled" } | 
+/**  The connection dropped and the publisher is retrying. */
+{ type: "reconnecting" } | 
+/**  The capture ended without an error (selected window closed, or stop). */
+{ type: "ended"; reason: string } | 
+/**
+ *  The publisher failed. `code` is stable for the UI; the message contains
+ *  no token or URL.
+ */
+{ type: "error"; code: string; message: string } | 
+/**  Stop completed. */
+{ type: "stopped" };
+
+/**
+ *  One event sent to the WebView. The payload is token-free and carries the
+ *  caller's run id, so the UI can attribute it to exactly one start/stop pair.
+ */
+export type NativeStreamEventMessage = {
+	runId: string,
+	event: NativeStreamEvent,
+};
+
+/**  One simulcast sender's cumulative RTP counters. Token-free. */
+export type NativeStreamLayerStats = {
+	rid: string,
+	width: number,
+	height: number,
+	framesEncoded: number,
+	framesSent: number,
+	packetsSent: number,
+	bytesSent: number,
+	framesPerSecond: number | null,
+};
+
+/**
+ *  Token-free counters for the live pipeline: WGC acquisition/storage, frames
+ *  fed to libwebrtc and the cumulative outbound RTP of every simulcast layer.
+ */
+export type NativeStreamStats = {
+	wgcAcquired: number,
+	wgcStored: number,
+	fedFrames: number,
+	encodedFrames: number,
+	sentFrames: number,
+	packetsSent: number,
+	sentBytes: number,
+	layers: NativeStreamLayerStats[],
+};
+
+/**
+ *  Whether this machine can run the native path. No hardware-encoder probe is
+ *  involved: the reason is only the OS capture API, the cursor property and
+ *  D3D11.
+ */
+export type NativeStreamSupport = NativeStreamSupport_Serialize | NativeStreamSupport_Deserialize;
+
+/**
+ *  Whether this machine can run the native path. No hardware-encoder probe is
+ *  involved: the reason is only the OS capture API, the cursor property and
+ *  D3D11.
+ */
+export type NativeStreamSupport_Deserialize = {
+	supported: boolean,
+	/**
+	 *  `IsCursorCaptureEnabled` exists (Windows 10 2004+). Without it the
+	 *  native path cannot keep the system cursor out of the frame.
+	 */
+	cursorCaptureAvailable: boolean,
+	/**
+	 *  `GraphicsCaptureAccess`/`IsBorderRequired` exists (Windows 11 22000+).
+	 *  Without it the capture border stays, which the UI must explain.
+	 */
+	borderApiAvailable: boolean,
+	/**  Human-readable, token-free reason when `supported` is false. */
+	reason?: string | null,
+};
+
+/**
+ *  Whether this machine can run the native path. No hardware-encoder probe is
+ *  involved: the reason is only the OS capture API, the cursor property and
+ *  D3D11.
+ */
+export type NativeStreamSupport_Serialize = {
+	supported: boolean,
+	/**
+	 *  `IsCursorCaptureEnabled` exists (Windows 10 2004+). Without it the
+	 *  native path cannot keep the system cursor out of the frame.
+	 */
+	cursorCaptureAvailable: boolean,
+	/**
+	 *  `GraphicsCaptureAccess`/`IsBorderRequired` exists (Windows 11 22000+).
+	 *  Without it the capture border stays, which the UI must explain.
+	 */
+	borderApiAvailable: boolean,
+	/**  Human-readable, token-free reason when `supported` is false. */
+	reason: string | null,
 };
 
 /**  Which noise suppressor runs on the capture path (stage 2.3.2e). */
@@ -2046,8 +2220,26 @@ export type VoiceSettings_Deserialize = {
 	processing: AudioProcessing,
 	/**  Output volume in percent, 0..=200. */
 	outputVolume: number,
-	/**  Level the loudness of incoming voices (stage P17). Off by default. */
+	/**
+	 *  Last voice-activation threshold in dBFS. It lives next to the gate mode
+	 *  so switching to push-to-talk and back keeps the user's calibrated
+	 *  threshold instead of resetting it to the default (stage P25).
+	 */
+	activationThresholdDb?: number | null,
+	/**
+	 *  Level the loudness of incoming voices (stage P17). On by default since
+	 *  stage P25: a quiet headset was masked by game sound, and the fixed
+	 *  leveler now reaches the common target (ADR 0037).
+	 */
 	levelVoices?: boolean,
+	/**
+	 *  Capture the configured modifier combinations (for example
+	 *  `Ctrl+Shift+M`) with Raw Input while another application is focused.
+	 * 
+	 *  Off by default: background keyboard capture is an explicit user choice
+	 *  (ADR 0012). A single key or mouse button is global without it.
+	 */
+	backgroundHotkeys?: boolean,
 	sounds: CueSettings,
 	hotkeys: HotkeyBinding_Deserialize[],
 };
@@ -2062,8 +2254,26 @@ export type VoiceSettings_Serialize = {
 	processing: AudioProcessing,
 	/**  Output volume in percent, 0..=200. */
 	outputVolume: number,
-	/**  Level the loudness of incoming voices (stage P17). Off by default. */
+	/**
+	 *  Last voice-activation threshold in dBFS. It lives next to the gate mode
+	 *  so switching to push-to-talk and back keeps the user's calibrated
+	 *  threshold instead of resetting it to the default (stage P25).
+	 */
+	activationThresholdDb: number | null,
+	/**
+	 *  Level the loudness of incoming voices (stage P17). On by default since
+	 *  stage P25: a quiet headset was masked by game sound, and the fixed
+	 *  leveler now reaches the common target (ADR 0037).
+	 */
 	levelVoices: boolean,
+	/**
+	 *  Capture the configured modifier combinations (for example
+	 *  `Ctrl+Shift+M`) with Raw Input while another application is focused.
+	 * 
+	 *  Off by default: background keyboard capture is an explicit user choice
+	 *  (ADR 0012). A single key or mouse button is global without it.
+	 */
+	backgroundHotkeys: boolean,
 	sounds: CueSettings,
 	hotkeys: HotkeyBinding_Serialize[],
 };
@@ -2121,6 +2331,8 @@ export type VoiceState_Deserialize = {
 	gate: GateMode,
 	/**  Push-to-talk binding and input status. */
 	pushToTalk: PttStatus_Deserialize,
+	/**  Which actions the global registration delivers. */
+	globalInput: GlobalInputStatus,
 	/**  Opened input device id. */
 	inputDevice?: string | null,
 	/**  Opened output device id. */
@@ -2149,6 +2361,8 @@ export type VoiceState_Serialize = {
 	gate: GateMode,
 	/**  Push-to-talk binding and input status. */
 	pushToTalk: PttStatus_Serialize,
+	/**  Which actions the global registration delivers. */
+	globalInput: GlobalInputStatus,
 	/**  Opened input device id. */
 	inputDevice: string | null,
 	/**  Opened output device id. */
@@ -2183,6 +2397,15 @@ export type VoiceStats_Serialize = {
 	/**  Audio-pipeline counters since the snapshot baseline. */
 	audio: AudioCounters,
 };
+
+/**
+ *  Which own voice flag a global hotkey or a control-bar button toggles.
+ * 
+ *  The toggle is computed by the core from the persisted [`VoicePreferences`],
+ *  so a manual button press and a global hotkey share the same current value
+ *  instead of racing on a stale UI snapshot or a cached hotkey target.
+ */
+export type VoiceToggle = "mute" | "deafen";
 
 /* Tauri Specta runtime */
 type EventEmit<T> = [T] extends [null] ? () => Promise<void> : (payload: T) => Promise<void>;

@@ -66,9 +66,9 @@
  * window title and an older UI bundle still read it.
  *
  * The frame is token-driven too. --chrome is the window behind the panels
- * (title bar, bottom bar, the gaps). Dark presets keep the side panels flush
- * and raise the main column one step; the light preset lays the panels on the
- * chrome as sheets (--sheet-*). Avatar fills are tokens so initials stay
+ * (title bar, bottom bar, the gaps). Every preset lays the panels on the
+ * chrome as sheets with the same --sheet-gap and --ui-radius-xl; a preset may
+ * still change the surface colours. Avatar fills are tokens so initials stay
  * readable in both themes.
  *
  * Contrast is a tested contract, not a preference: src/test/tokens.test.ts
@@ -90,13 +90,14 @@
   --fixed-scale: 1;
   --row-height: 32px;
 
-  /* Frame: flush side panels, the main column rounded on top (direction A). */
-  --sheet-gap: 0px;
-  --sheet-radius-side: 0 var(--ui-radius-lg) 0 0;
-  --sheet-radius-main: var(--ui-radius-lg) var(--ui-radius-lg) 0 0;
-  --sheet-radius-members: var(--ui-radius-lg) 0 0 0;
-  --sheet-border: 0 solid transparent;
-  --sheet-shadow: none;
+  /* Frame: one gap and one radius for every preset, so the side card never
+     touches the central panel (playtest-2, complaint 5). */
+  --sheet-gap: 8px;
+  --sheet-radius-side: var(--ui-radius-xl);
+  --sheet-radius-main: var(--ui-radius-xl);
+  --sheet-radius-members: var(--ui-radius-xl);
+  --sheet-border: 1px solid var(--border);
+  --sheet-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
   --chat-avatar: 36px;
 
   /* Media overlays sit on the video frame, not on the interface, so they keep

@@ -217,15 +217,17 @@ curl -H "$TOKEN_HEADER" \
 # Remove your own
 curl -X DELETE -H "$TOKEN_HEADER" \
   "https://$HOST/api/v1/avatars/me"
-
-# An administrator resets someone else's avatar; the target may be offline
-curl -X DELETE -H "$TOKEN_HEADER" \
-  "https://$HOST/api/v1/members/42/avatar"
 ```
+
+Only the owner changes a picture. There is no route that resets another
+user's avatar, not even for `manage_server`: a client that still calls the old
+`DELETE /api/v1/members/{id}/avatar` gets `404 not_found` and the target keeps
+its hash and file (ADR 0035).
 
 The server decodes the picture, centre-crops it to a square, scales it to
 256×256 and re-encodes it as PNG (when it has transparency) or JPEG. The upload
 name and declared type are ignored; the type is read from the bytes. The same
 picture uploaded by two users is stored once. Changes are rate limited (five
 quick changes, then one every 20 s) and each change is written to the audit log
-(`avatar.update`, `avatar.clear`, `member.avatar_reset`).
+(`avatar.update`, `avatar.clear`). Historical `member.avatar_reset` entries
+written before ADR 0035 stay readable; new ones are never written.

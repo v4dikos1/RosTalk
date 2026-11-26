@@ -71,6 +71,7 @@ export type {
   DeviceList,
   GateMode,
   GateSettings,
+  GlobalInputStatus,
   HotkeyAction,
   HotkeyBinding,
   IdentityInfo,
@@ -115,5 +116,6 @@ export type {
   VoiceState,
   VoiceStatePatch,
   VoiceStateView,
+  VoiceToggle,
   VoiceStats,
 } from "./api";

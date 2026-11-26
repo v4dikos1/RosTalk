@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { UserAvatar } from "@/components/common/UserAvatar";
+import { AvatarDialog } from "@/components/profile/AvatarDialog";
 import { AppearanceSection } from "@/components/settings/AppearanceSection";
 import { DiagnosticsSection } from "@/components/settings/DiagnosticsSection";
 import { SettingRow, SectionTitle } from "@/components/settings/SettingsPrimitives";
@@ -53,8 +54,10 @@ import {
   HOTKEY_ACTIONS,
   acceleratorFromEvent,
   acceleratorFromMouse,
+  assignHotkey,
   formatAccelerator,
   markOnboardingReset,
+  needsBackgroundOptIn,
 } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import {
@@ -81,9 +84,11 @@ const sections: {
 ];
 
 /**
- * Profile: the nickname and the avatar preview. The default channel stays in
- * the general section; the server is the authority for the nickname, so saving
- * while connected also sends it to the server.
+ * Profile: the nickname and the avatar. The default channel stays in the
+ * general section; the server is the authority for the nickname, so saving
+ * while connected also sends it to the server. Since stage P27 the avatar
+ * itself is edited here: the preview opens the existing crop dialog, and the
+ * separate "change avatar" item in the profile menu is gone.
  */
 function ProfileSection() {
   const { t } = useTranslation();
@@ -91,6 +96,7 @@ function ProfileSection() {
   const update = useSettingsStore((store) => store.update);
   const state = useCoreStore((store) => store.state);
   const [nickname, setNickname] = useState(settings?.nickname ?? "");
+  const [avatarOpen, setAvatarOpen] = useState(false);
 
   if (!settings) {
     return null;
@@ -113,15 +119,24 @@ function ProfileSection() {
       <div>
         <SectionTitle>{t("settings.general.profile")}</SectionTitle>
         <div className="flex items-center gap-3 py-2">
-          <UserAvatar
-            name={self?.nickname || nickname || "?"}
-            color={self?.color ?? null}
-            serverId={state?.server?.id ?? null}
-            userId={self?.id}
-            avatarHash={self?.avatarHash ?? ""}
-            size="xl"
-          />
-          <div className="min-w-0">
+          <button
+            type="button"
+            onClick={() => setAvatarOpen(true)}
+            aria-label={t("avatar.change")}
+            title={t("avatar.change")}
+            data-testid="settings-avatar-preview"
+            className="rounded-full transition-opacity duration-150 hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-raised"
+          >
+            <UserAvatar
+              name={self?.nickname || nickname || "?"}
+              color={self?.color ?? null}
+              serverId={state?.server?.id ?? null}
+              userId={self?.id}
+              avatarHash={self?.avatarHash ?? ""}
+              size="xl"
+            />
+          </button>
+          <div className="min-w-0 flex-1">
             <p className="text-[12px] font-medium text-foreground">
               {t("settings.general.avatarPreview")}
             </p>
@@ -129,6 +144,14 @@ function ProfileSection() {
               {t("settings.general.avatarPreviewHint")}
             </p>
           </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setAvatarOpen(true)}
+            data-testid="settings-avatar-change"
+          >
+            {t("avatar.change")}
+          </Button>
         </div>
         <SettingRow label={t("settings.general.nickname")}>
           <div className="flex items-center gap-1.5">
@@ -155,6 +178,7 @@ function ProfileSection() {
             : t("settings.profile.offlineHint")}
         </p>
       </div>
+      <AvatarDialog open={avatarOpen} onOpenChange={setAvatarOpen} />
     </div>
   );
 }
@@ -318,7 +342,9 @@ function VoiceSection() {
   const testing = voiceState?.micTest === true;
   const available = (devices?.inputs.length ?? 0) > 0;
   const threshold =
-    voice.gate.mode === "voiceActivation" ? voice.gate.threshold_db ?? -45 : -45;
+    voice.gate.mode === "voiceActivation"
+      ? voice.gate.threshold_db ?? voice.activationThresholdDb ?? -45
+      : voice.activationThresholdDb ?? -45;
   const speaking =
     voice.gate.mode === "voiceActivation" &&
     ((voiceState?.publishing ?? false) || levelDb > threshold);
@@ -432,6 +458,9 @@ function VoiceSection() {
             value={voice.gate.mode}
             onChange={(mode) =>
               void updateVoice({
+                // Keep the calibrated threshold across PTT/continuous: the
+                // gate enum itself only carries it in voice activation (P25).
+                activationThresholdDb: threshold,
                 gate:
                   mode === "voiceActivation"
                     ? {
@@ -469,6 +498,7 @@ function VoiceSection() {
               aria-label={t("voice.threshold")}
               onChange={(event) =>
                 void updateVoice({
+                  activationThresholdDb: Number(event.target.value),
                   gate: {
                     mode: "voiceActivation",
                     threshold_db: Number(event.target.value),
@@ -722,6 +752,7 @@ function HotkeysSection() {
   const { t } = useTranslation();
   const settings = useSettingsStore((store) => store.settings);
   const updateVoice = useSettingsStore((store) => store.updateVoice);
+  const voice = useVoiceStore((store) => store.state);
   const [capturing, setCapturing] = useState<HotkeyAction | null>(null);
   const captureRef = useRef<HotkeyAction | null>(null);
 
@@ -737,19 +768,9 @@ function HotkeysSection() {
       if (!settings) {
         return;
       }
-      const bindings = settings.voice.hotkeys.map((binding) => {
-        if (binding.action === action) {
-          return { action, accelerator };
-        }
-        if (
-          accelerator !== null &&
-          binding.accelerator?.toLowerCase() === accelerator.toLowerCase()
-        ) {
-          return { action: binding.action, accelerator: null };
-        }
-        return binding;
+      void updateVoice({
+        hotkeys: assignHotkey(settings.voice.hotkeys, action, accelerator),
       });
-      void updateVoice({ hotkeys: bindings });
       setCapturing(null);
     }
     function onKey(event: KeyboardEvent) {
@@ -798,7 +819,38 @@ function HotkeysSection() {
   return (
     <div>
       <SectionTitle>{t("voice.hotkeys.title")}</SectionTitle>
-      <p className="mb-2 text-[11px] text-muted">{t("voice.hotkeys.hint")}</p>
+      <p className="mb-1 text-[11px] text-muted">{t("voice.hotkeys.hint")}</p>
+      <p className="mb-2 text-[11px] text-faint">
+        {t("voice.hotkeys.globalHint")}
+      </p>
+      <SettingRow
+        label={t("voice.hotkeys.background")}
+        hint={t("voice.hotkeys.backgroundHint")}
+      >
+        <Switch
+          checked={settings.voice.backgroundHotkeys}
+          onCheckedChange={(backgroundHotkeys) =>
+            void updateVoice({ backgroundHotkeys })
+          }
+          aria-label={t("voice.hotkeys.background")}
+          data-testid="settings-background-hotkeys"
+        />
+      </SettingRow>
+      {voice?.pushToTalk.hook === "unavailable" && voice.pushToTalk.error ? (
+        <p
+          role="alert"
+          className="mb-2 text-[11px] text-danger"
+          data-testid="hotkeys-registration-error"
+        >
+          {voice.globalInput.registered
+            ? t("voice.hotkeys.pttError", {
+                error: voice.pushToTalk.error,
+              })
+            : t("voice.hotkeys.registrationError", {
+                error: voice.pushToTalk.error,
+              })}
+        </p>
+      ) : null}
       <div className="divide-y divide-border rounded-md border border-border">
         {HOTKEY_ACTIONS.map((action) => {
           const binding = settings.voice.hotkeys.find(
@@ -838,6 +890,15 @@ function HotkeysSection() {
           );
         })}
       </div>
+      {needsBackgroundOptIn(
+        settings.voice.hotkeys.find(
+          (binding) => binding.action === "pushToTalk",
+        )?.accelerator ?? null,
+      ) && !settings.voice.backgroundHotkeys ? (
+        <p role="alert" className="mt-2 text-[11px] text-danger">
+          {t("voice.hotkeys.pttNeedsSingleKey")}
+        </p>
+      ) : null}
       <div className="mt-2 flex items-center gap-2">
         <Button
           size="sm"

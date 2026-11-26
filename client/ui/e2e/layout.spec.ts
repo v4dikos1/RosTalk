@@ -61,16 +61,14 @@ async function checkEveryPanel(page: Page) {
   await shot(page, "panel-quality");
   await closeWithEscape(page, "quality-details");
 
-  // The sidebar invite opens upwards from the footer.
-  await page.getByTestId("invite-open").first().click();
-  await expectInside(page, "invite-popover", "invite above the sidebar");
-  await closeWithEscape(page, "invite-popover");
+  // The server menu is the only invite entry now (stage P26, ADR 0038).
+  await page.getByTestId("server-name").click();
+  await expectInside(page, "server-actions-menu", "server actions");
+  await page.getByTestId("server-menu-invite").click();
+  await expectInside(page, "invite-dialog", "invite dialog");
+  await closeWithEscape(page, "invite-dialog");
 
-  await page.getByTestId("invite-open").last().click();
-  await expectInside(page, "invite-popover", "invite under the channel header");
-  await closeWithEscape(page, "invite-popover");
-
-  // Transmission mode menu in the bottom bar.
+  // Transmission mode menu in the sidebar voice group.
   await page.getByTestId("control-gate").click();
   await expectInside(page, "gate-menu", "transmission mode menu");
   await shot(page, "panel-gate");
@@ -91,14 +89,9 @@ async function checkEveryPanel(page: Page) {
   await page.getByTestId("profile-panel").click();
   await expectInside(page, "profile-menu", "profile menu");
   await closeWithEscape(page, "profile-menu");
-
-  // Server actions menu opened from the server name, anchored to a point.
-  await page.getByTestId("server-name").click();
-  await expectInside(page, "server-actions-menu", "server actions");
-  await closeWithEscape(page, "server-actions-menu");
 }
 
-/** The bottom bar keeps the ping, the channel and "leave" on screen. */
+/** The bottom bar keeps the status, and the voice buttons exist only once. */
 async function checkBottomBar(page: Page) {
   const viewport = page.viewportSize();
   const bar = page.getByTestId("control-bar");
@@ -109,6 +102,12 @@ async function checkBottomBar(page: Page) {
     return;
   }
   expect(barBox.y + barBox.height).toBeLessThanOrEqual(viewport.height + 0.5);
+  await expect(bar.getByTestId("control-mic")).toHaveCount(0);
+  await expect(bar.getByTestId("control-leave")).toHaveCount(0);
+
+  const voice = page.getByTestId("voice-controls");
+  await expect(voice).toBeVisible();
+  await expect(voice.getByTestId("control-mic")).toBeVisible();
 
   for (const id of ["control-mic", "control-sound", "control-leave"]) {
     const box = await page.getByTestId(id).boundingBox();
@@ -125,6 +124,55 @@ async function checkBottomBar(page: Page) {
       viewport.width + 0.5,
     );
   }
+}
+
+/** Header groups do not share pixels: name, badges, counter and buttons. */
+async function checkChannelHeader(page: Page) {
+  const ids = [
+    "channel-you-are-here",
+    "channel-live",
+    "channel-members",
+    "toggle-stream",
+    "toggle-members",
+  ];
+  const boxes: Array<{ id: string; x: number; y: number; w: number; h: number }> =
+    [];
+  for (const id of ids) {
+    const locator = page.getByTestId(id);
+    if ((await locator.count()) === 0) {
+      continue;
+    }
+    const box = await locator.boundingBox();
+    expect(box, `${id} box`).not.toBeNull();
+    if (box) {
+      boxes.push({ id, x: box.x, y: box.y, w: box.width, h: box.height });
+    }
+  }
+  for (let index = 0; index < boxes.length; index += 1) {
+    for (let other = index + 1; other < boxes.length; other += 1) {
+      const a = boxes[index]!;
+      const b = boxes[other]!;
+      const overlapX = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const overlapY = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      expect(
+        overlapX > 0.5 && overlapY > 0.5,
+        `${a.id} overlaps ${b.id}`,
+      ).toBe(false);
+    }
+  }
+}
+
+/** The side card and the central panel are separated by the sheet gap. */
+async function checkSheetGap(page: Page) {
+  const sidebar = await page.getByTestId("main-screen").locator("aside").first().boundingBox();
+  const main = await page.getByTestId("main-screen").locator("main").boundingBox();
+  expect(sidebar).not.toBeNull();
+  expect(main).not.toBeNull();
+  if (!sidebar || !main) {
+    return;
+  }
+  expect(Math.round(main.x - (sidebar.x + sidebar.width))).toBe(8);
+  expect(Math.round(sidebar.x)).toBe(8);
 }
 
 test.describe("960x600: compact layout", () => {
@@ -148,6 +196,8 @@ test.describe("960x600: compact layout", () => {
     await expect(page.getByTestId("members-pane")).toHaveCount(0);
 
     await checkBottomBar(page);
+    await checkChannelHeader(page);
+    await checkSheetGap(page);
     await checkEveryPanel(page);
     await shot(page, "960-chat");
   });
@@ -159,6 +209,8 @@ test.describe("960x600 at UI scale 125 %", () => {
   test("nothing is clipped at 125 %", async ({ page }) => {
     await open(page, "theme=dark&lang=ru&channel=4&view=chat&scale=125");
     await checkBottomBar(page);
+    await checkChannelHeader(page);
+    await checkSheetGap(page);
     await checkEveryPanel(page);
     await shot(page, "960-125-chat");
   });
@@ -183,6 +235,8 @@ test.describe("maximised 1920x1080", () => {
     await shot(page, "1920-chat");
 
     await checkBottomBar(page);
+    await checkChannelHeader(page);
+    await checkSheetGap(page);
     await checkEveryPanel(page);
 
     await page.goto("/?fixtures=1&theme=dark&lang=ru&channel=4&view=chat");
@@ -235,6 +289,8 @@ test.describe("DPI 150 %", () => {
   test("panels and the bottom bar fit at 150 %", async ({ page }) => {
     await open(page, "theme=dark&lang=ru&channel=4&view=chat");
     await checkBottomBar(page);
+    await checkChannelHeader(page);
+    await checkSheetGap(page);
     await checkEveryPanel(page);
     await shot(page, "dpi150-chat");
   });

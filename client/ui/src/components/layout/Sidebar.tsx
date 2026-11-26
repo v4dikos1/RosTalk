@@ -1,22 +1,17 @@
-import { Flame, LogIn, Plus, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ChannelTree } from "@/components/channels/ChannelTree";
 import { UserContextMenu } from "@/components/channels/UserContextMenu";
+import { BrandMark } from "@/components/common/BrandMark";
 import { PresenceDot } from "@/components/common/PresenceDot";
 import { UserAvatar } from "@/components/common/UserAvatar";
 import { ConnectionQuality } from "@/components/connection/ConnectionQuality";
+import { VoiceControls } from "@/components/controls/VoiceControls";
 import { ServerSwitcher } from "@/components/servers/ServerSwitcher";
-import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { UnreadView, UserView } from "@/core/api";
 import { cn } from "@/lib/utils";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { InvitePopover } from "@/components/servers/InvitePopover";
 import { memberMove, sendAdmin } from "@/lib/admin";
 import { joinVoiceChannel } from "@/lib/channels";
 import { asCoreError } from "@/lib/coreError";
@@ -110,7 +105,6 @@ export function Sidebar() {
   const state = useCoreStore((core) => core.state);
   const selectedChannelId = useAppStore((app) => app.selectedChannelId);
   const selectChannel = useAppStore((app) => app.selectChannel);
-  const openConnect = useAppStore((app) => app.openConnect);
   const openPalette = useAppStore((app) => app.openPalette);
   const openUserMenu = useAppStore((app) => app.openUserMenu);
   const openDm = useAppStore((app) => app.openDm);
@@ -138,10 +132,13 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="sheet sheet-side flex w-[264px] shrink-0 flex-col bg-surface">
+    <aside
+      data-testid="sidebar"
+      className="sheet sheet-side flex w-[264px] shrink-0 flex-col bg-surface"
+    >
       <header className="flex h-14 shrink-0 items-center gap-2.5 px-3">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent/15 text-accent">
-          <Flame className="size-[18px]" aria-hidden />
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent/15">
+          <BrandMark className="size-[18px]" />
         </span>
         <ServerSwitcher />
         <ConnectionQuality compact />
@@ -205,34 +202,8 @@ export function Sidebar() {
         </div>
       </ScrollArea>
 
-      <footer className="flex shrink-0 items-center gap-2 border-t border-border px-2 py-2">
-        {connected ? (
-          <InvitePopover up withLabel />
-        ) : (
-          <Button
-            variant="secondary"
-            size="sm"
-            className="flex-1 justify-start"
-            onClick={() => openConnect()}
-            data-testid="open-connect"
-          >
-            <LogIn className="size-3.5" aria-hidden />
-            {t("main.connect")}
-          </Button>
-        )}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={t("servers.add")}
-              onClick={() => openConnect()}
-            >
-              <Plus className="size-4" aria-hidden />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{t("servers.addHint")}</TooltipContent>
-        </Tooltip>
+      <footer className="shrink-0 border-t border-border px-2 py-2">
+        <VoiceControls />
       </footer>
 
       <UserContextMenu />

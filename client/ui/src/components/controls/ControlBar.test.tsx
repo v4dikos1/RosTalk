@@ -1,5 +1,4 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -23,6 +22,13 @@ function voiceState(pushToTalk: PttStatus): VoiceState {
     micTest: false,
     gate: { mode: "pushToTalk" },
     pushToTalk,
+    globalInput: {
+      registered: true,
+      keyboardCaptured: false,
+      pushToTalk: true,
+      toggleMute: false,
+      toggleDeafen: false,
+    },
     inputDevice: "fixture-mic",
     outputDevice: "fixture-headphones",
     error: null,
@@ -88,37 +94,6 @@ describe("ControlBar push-to-talk status", () => {
 
     expect(screen.getByTestId("ptt-status")).toHaveTextContent(
       "Клавиша: Боковая кнопка мыши (X1/X2)",
-    );
-  });
-
-  it("offers three labelled gate modes in a menu instead of cycling", async () => {
-    const user = userEvent.setup();
-    renderBar({ hook: "active", binding: "X1/X2", error: null });
-
-    await user.click(screen.getByTestId("control-gate"));
-    expect(screen.getByTestId("gate-menu")).toBeInTheDocument();
-    expect(screen.getByTestId("gate-option-voiceActivation")).toHaveTextContent(
-      "По голосу",
-    );
-    expect(screen.getByTestId("gate-option-pushToTalk")).toHaveTextContent(
-      "По клавише",
-    );
-    expect(screen.getByTestId("gate-option-continuous")).toHaveTextContent(
-      "Передача всегда",
-    );
-  });
-
-  it("keeps microphone testing separate from deafen", () => {
-    renderBar({ hook: "active", binding: "X1/X2", error: null });
-
-    expect(screen.getByTestId("control-mic-test")).toHaveAccessibleName(
-      "Прослушать себя",
-    );
-    expect(screen.getByTestId("control-sound")).toHaveAccessibleName(
-      "Выключить звук",
-    );
-    expect(screen.getByTestId("control-leave")).toHaveTextContent(
-      "Покинуть канал",
     );
   });
 

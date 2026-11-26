@@ -1,4 +1,3 @@
-import { Flame } from "lucide-react";
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -6,6 +5,7 @@ import { CommandPalette } from "@/components/command/CommandPalette";
 import { ChatNotices } from "@/components/chat/ChatNotices";
 import { ChannelPasswordDialog } from "@/components/connect/ChannelPasswordDialog";
 import { ConnectDialog } from "@/components/connect/ConnectDialog";
+import { BrandMark } from "@/components/common/BrandMark";
 import { ContextMenu } from "@/components/common/ContextMenu";
 import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 import { TrayHint } from "@/components/common/TrayHint";
@@ -50,8 +50,8 @@ function Splash() {
   return (
     <div className="flex h-full items-center justify-center bg-background">
       <div className="flex flex-col items-center gap-3">
-        <span className="flex size-12 items-center justify-center rounded-lg bg-accent/15 text-accent">
-          <Flame className="size-6" aria-hidden />
+        <span className="flex size-12 items-center justify-center rounded-lg bg-accent/15">
+          <BrandMark className="size-6" />
         </span>
         <p className="text-[13px] text-muted">{t("app.loading")}</p>
       </div>

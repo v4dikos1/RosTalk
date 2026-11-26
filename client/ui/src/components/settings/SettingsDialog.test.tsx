@@ -70,6 +70,13 @@ function prepare(
       micTest: false,
       gate: { mode: "voiceActivation", threshold_db: -45, hold_ms: 300 },
       pushToTalk: { hook: "active", binding: "X1/X2", error: null },
+      globalInput: {
+        registered: true,
+        keyboardCaptured: false,
+        pushToTalk: true,
+        toggleMute: false,
+        toggleDeafen: false,
+      },
       inputDevice: null,
       outputDevice: null,
       error: null,
@@ -89,6 +96,36 @@ describe("SettingsDialog", () => {
     await i18n.changeLanguage("ru");
     vi.spyOn(coreApi, "updateSettings").mockImplementation(
       async (settings: ClientSettings) => settings,
+    );
+  });
+
+  it("opens the avatar editor from the profile section", async () => {
+    prepare("profile");
+    render(<SettingsDialog />);
+
+    expect(screen.queryByTestId("avatar-dialog")).toBeNull();
+    await userEvent.click(screen.getByTestId("settings-avatar-change"));
+    expect(screen.getByTestId("avatar-dialog")).toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByTestId("avatar-dialog")).toBeNull();
+  });
+
+  it("turns background combinations on through the core", async () => {
+    prepare("hotkeys");
+    render(<SettingsDialog />);
+
+    await userEvent.click(screen.getByTestId("settings-background-hotkeys"));
+
+    await waitFor(() =>
+      expect(
+        useSettingsStore.getState().settings?.voice.backgroundHotkeys,
+      ).toBe(true),
+    );
+    expect(coreApi.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        voice: expect.objectContaining({ backgroundHotkeys: true }),
+      }),
     );
   });
 

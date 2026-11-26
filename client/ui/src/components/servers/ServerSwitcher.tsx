@@ -46,6 +46,16 @@ export function ServerSwitcher() {
   );
   const connected = state?.connection === "connected";
   const servers = state?.servers ?? [];
+  const serverName = state?.server?.name ?? active?.name ?? t("app.name");
+  const subtitle = connected
+    ? t("main.onlineCount", {
+        count: state?.server?.onlineUsers ?? state?.users.length ?? 0,
+      })
+    : state?.connection === "reconnecting"
+      ? t("connection.reconnecting")
+      : active
+        ? active.host
+        : t("connection.disconnected");
 
   async function connect(server: ServerBookmark) {
     closeList();
@@ -88,22 +98,15 @@ export function ServerSwitcher() {
           onClick={openActions}
           aria-haspopup="menu"
           data-testid="server-name"
+          title={`${serverName} · ${subtitle}`}
           className="flex min-w-0 flex-1 items-center gap-1 rounded-sm px-0.5 py-0.5 text-left hover:bg-hover"
         >
           <span className="min-w-0 flex-1">
             <span className="block truncate text-[14px] font-semibold text-foreground">
-              {state?.server?.name ?? active?.name ?? t("app.name")}
+              {serverName}
             </span>
             <span className="block truncate text-[11px] text-muted">
-              {connected
-                ? t("main.onlineCount", {
-                    count: state?.server?.onlineUsers ?? state?.users.length ?? 0,
-                  })
-                : state?.connection === "reconnecting"
-                  ? t("connection.reconnecting")
-                  : active
-                    ? active.host
-                    : t("connection.disconnected")}
+              {subtitle}
             </span>
           </span>
         </button>

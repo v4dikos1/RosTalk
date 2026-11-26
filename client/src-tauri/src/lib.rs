@@ -11,6 +11,7 @@ mod diagnostics;
 mod economy;
 mod ipc;
 mod logging;
+mod native_stream;
 mod ptt;
 mod updates;
 
@@ -87,7 +88,13 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             ipc::chat_proxy,
             ipc::request_stream_credentials,
             ipc::set_watching,
+            native_stream::native_stream_support,
+            native_stream::start_native_stream,
+            native_stream::stop_native_stream,
+            native_stream::get_native_stream_state,
+            native_stream::native_stream_stats,
             ipc::set_voice_state,
+            ipc::toggle_voice_state,
             ipc::set_nickname,
             ipc::remove_server,
             ipc::identity_info,
@@ -131,6 +138,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
         .events(collect_events![
             ipc::CoreStateEvent,
             ipc::VoiceEventMessage,
+            native_stream::NativeStreamEventMessage,
             ipc::DeepLinkEvent,
             updates::UpdateProgressEvent,
         ])
@@ -358,11 +366,24 @@ fn wire_media(core: &CoreHandle, voice: &VoiceHandle) {
     ));
 }
 
-/// Pushes the persisted settings into the running engine, without a restart.
+/// Pushes the persisted audio settings into the running engine, without a
+/// restart.
 ///
 /// Called after every `update_settings` and once after start. Device changes
 /// rebuild the audio tract inside the engine; the rest is a cheap state update.
-pub(crate) fn apply_voice_settings(voice: &VoiceHandle, settings: &ClientSettings) {
+///
+/// Mute and deafen are deliberately not part of this path (stage P25). They are
+/// live voice state: `set_voice_state` persists them after the server accepts a
+/// change, while the settings object the UI saves can still carry an old
+/// mirror. Writing those flags here would resurrect the old value and silently
+/// mute (or unmute) somebody who just used the control bar or a hotkey. The
+/// start path still restores the saved flags through `VoiceConfig` in
+/// `create_voice`, and a profile load goes through the same core state.
+pub(crate) fn apply_voice_settings(
+    core: &Arc<CoreHandle>,
+    voice: &VoiceHandle,
+    settings: &ClientSettings,
+) {
     let voice_settings = &settings.voice;
     if let Err(error) = voice.set_input_device(voice_settings.input_device.clone()) {
         log_voice("input device", &error);
@@ -385,56 +406,243 @@ pub(crate) fn apply_voice_settings(voice: &VoiceHandle, settings: &ClientSetting
     if let Err(error) = voice.set_level_voices(voice_settings.level_voices) {
         log_voice("voice leveling", &error);
     }
-    if let Err(error) = voice.set_self_muted(settings.self_muted) {
-        log_voice("self mute", &error);
-    }
-    if let Err(error) = voice.set_deafened(settings.self_deafened) {
-        log_voice("deafen", &error);
-    }
-    sync_push_to_talk(voice, settings);
+    sync_global_input(core, voice, settings);
 }
 
 fn log_voice(what: &str, error: &rostalk_voice::VoiceError) {
     eprintln!("rostalk: could not apply {what}: {}", error.user_message());
 }
 
-/// Accelerators already installed by Raw Input, so slider changes do not
-/// restart the global hook on every settings write.
-fn installed_ptt() -> &'static Mutex<Option<String>> {
+/// Accelerators already installed, so slider changes do not restart the global
+/// hook on every settings write.
+fn installed_global_input() -> &'static Mutex<Option<String>> {
     static INSTALLED: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     INSTALLED.get_or_init(|| Mutex::new(None))
 }
 
-fn push_to_talk_binding(settings: &ClientSettings) -> Option<String> {
+/// The accelerator stored for one action.
+fn hotkey_accelerator(
+    settings: &ClientSettings,
+    action: rostalk_core::HotkeyAction,
+) -> Option<String> {
     settings
         .voice
         .hotkeys
         .iter()
-        .find(|binding| binding.action == rostalk_core::HotkeyAction::PushToTalk)
+        .find(|binding| binding.action == action)
         .and_then(|binding| binding.accelerator.clone())
 }
 
-/// Installs Raw Input for the configured push-to-talk binding when it changed.
+/// One queued toggle and the session in which the key was pressed.
+struct ToggleRequest {
+    action: ptt::GlobalAction,
+    session: Option<SessionKey>,
+}
+
+/// Identity of the live control session. A reconnect or a channel move changes
+/// it, so a toggle queued in the old session is dropped instead of acting on the
+/// new one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionKey {
+    server: Option<String>,
+    self_user_id: u64,
+    channel_id: u64,
+    connected_at_unix_ms: i64,
+}
+
+fn session_key(state: &rostalk_core::CoreState) -> Option<SessionKey> {
+    if state.connection != rostalk_core::ConnectionPhase::Connected {
+        return None;
+    }
+    let self_user = state
+        .users
+        .iter()
+        .find(|user| user.id == state.self_user_id)?;
+    Some(SessionKey {
+        server: state.server.as_ref().map(|server| server.id.clone()),
+        self_user_id: state.self_user_id,
+        channel_id: self_user.channel_id,
+        connected_at_unix_ms: self_user.connected_at_unix_ms,
+    })
+}
+
+/// A queued toggle may run only in the exact session it was pressed in.
+fn session_matches(queued: Option<&SessionKey>, current: Option<&SessionKey>) -> bool {
+    matches!((queued, current), (Some(queued), Some(current)) if queued == current)
+}
+
+/// Serializes the manual control-bar toggle and the global hotkey worker,
+/// including the voice-engine update after the core request.
+pub(crate) fn voice_toggle_lock() -> &'static tauri::async_runtime::Mutex<()> {
+    static LOCK: OnceLock<tauri::async_runtime::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tauri::async_runtime::Mutex::new(()))
+}
+
+/// The single worker that applies hotkey toggles in order.
 ///
-/// Failure is not fatal: the default voice-activation gate keeps working
-/// without push-to-talk, and the UI shows the binding and the installation
-/// error.
-pub(crate) fn sync_push_to_talk(voice: &VoiceHandle, settings: &ClientSettings) {
-    let binding = push_to_talk_binding(settings);
-    let current = binding.clone().unwrap_or_default();
-    let changed = installed_ptt()
+/// It has no private target cache: `CoreHandle::toggle_voice_state` reads the
+/// persisted `VoicePreferences`, which both this worker and the manual IPC
+/// update after a successful server request. That keeps a manual change in the
+/// same channel visible to the next hotkey and still flips twice on two quick
+/// presses before the server echo arrives.
+struct ToggleWorker {
+    core: Arc<CoreHandle>,
+    voice: VoiceHandle,
+}
+
+impl ToggleWorker {
+    async fn apply(&mut self, request: ToggleRequest) {
+        let _guard = voice_toggle_lock().lock().await;
+        let state = self.core.state();
+        let current = session_key(&state);
+        if !session_matches(request.session.as_ref(), current.as_ref()) {
+            log::info!("global hotkey: dropped a toggle queued for another session");
+            return;
+        }
+        let Some(self_user) = state
+            .users
+            .iter()
+            .find(|user| user.id == state.self_user_id)
+        else {
+            return;
+        };
+        let idle_channel = state
+            .channels
+            .iter()
+            .find(|channel| channel.id == self_user.channel_id)
+            .is_some_and(|channel| channel.afk);
+        match request.action {
+            ptt::GlobalAction::ToggleMute if self_user.voice.server_muted || idle_channel => {
+                log::info!("global hotkey: mute ignored, the server owns this state");
+                return;
+            }
+            ptt::GlobalAction::ToggleDeafen if self_user.voice.server_deafened => {
+                log::info!("global hotkey: deafen ignored, the server owns this state");
+                return;
+            }
+            _ => {}
+        }
+        let field = match request.action {
+            ptt::GlobalAction::ToggleMute => rostalk_core::VoiceToggle::Mute,
+            ptt::GlobalAction::ToggleDeafen => rostalk_core::VoiceToggle::Deafen,
+        };
+        let next = match self.core.toggle_voice_state(field).await {
+            Ok(next) => next,
+            Err(error) => {
+                log::warn!(
+                    "global hotkey: the server rejected the change: {}",
+                    error.message
+                );
+                return;
+            }
+        };
+        match field {
+            rostalk_core::VoiceToggle::Mute => {
+                let _ = self.voice.set_self_muted(next);
+            }
+            rostalk_core::VoiceToggle::Deafen => {
+                let _ = self.voice.set_deafened(next);
+            }
+        }
+        log::info!("global hotkey: {:?} applied", request.action);
+    }
+}
+
+/// The single long-lived toggle worker and its queue.
+fn toggle_sender(
+    core: Arc<CoreHandle>,
+    voice: VoiceHandle,
+) -> std::sync::mpsc::Sender<ToggleRequest> {
+    static SENDER: OnceLock<std::sync::mpsc::Sender<ToggleRequest>> = OnceLock::new();
+    SENDER
+        .get_or_init(|| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let mut worker = ToggleWorker { core, voice };
+            let spawned = std::thread::Builder::new()
+                .name("rostalk-hotkey-toggles".to_owned())
+                .spawn(move || {
+                    while let Ok(request) = receiver.recv() {
+                        // The core call is async; the dedicated thread gives
+                        // the toggles a strict order without a polling loop.
+                        tauri::async_runtime::block_on(worker.apply(request));
+                    }
+                });
+            if let Err(error) = spawned {
+                log::warn!("could not start the global hotkey worker: {error}");
+            }
+            sender
+        })
+        .clone()
+}
+
+/// Forwards a global toggle from the Raw Input thread to the serial worker.
+///
+/// The server is authoritative: a moderator mute or deafen and the idle
+/// channel (ADR 0009) are stronger than a local shortcut. The request goes
+/// through the same core toggle as the control-bar buttons.
+fn global_toggle_sink(core: Arc<CoreHandle>, voice: VoiceHandle) -> ptt::ToggleSink {
+    let sender = toggle_sender(core.clone(), voice);
+    Arc::new(move |action: ptt::GlobalAction| {
+        // The Raw Input callback must return at once; the queue is unbounded.
+        let session = session_key(&core.state());
+        let _ = sender.send(ToggleRequest { action, session });
+    })
+}
+
+/// Installs Raw Input for the configured global bindings when they changed.
+///
+/// A single key or mouse button is global by itself; a modifier combination
+/// needs `backgroundHotkeys` (ADR 0012). Failure of one action does not stop
+/// the others: an invalid push-to-talk binding still leaves valid mute/deafen
+/// toggles registered. Failure is not fatal in any case: the voice-activation
+/// gate keeps working without push-to-talk, and the UI shows the binding and
+/// the installation error.
+pub(crate) fn sync_global_input(
+    core: &Arc<CoreHandle>,
+    voice: &VoiceHandle,
+    settings: &ClientSettings,
+) {
+    use rostalk_core::HotkeyAction;
+
+    let config = ptt::GlobalConfig {
+        push_to_talk: hotkey_accelerator(settings, HotkeyAction::PushToTalk),
+        toggle_mute: hotkey_accelerator(settings, HotkeyAction::ToggleMute),
+        toggle_deafen: hotkey_accelerator(settings, HotkeyAction::ToggleDeafen),
+        background_hotkeys: settings.voice.background_hotkeys,
+    };
+    let signature = format!(
+        "{}|{}|{}|{}",
+        config.push_to_talk.as_deref().unwrap_or_default(),
+        config.toggle_mute.as_deref().unwrap_or_default(),
+        config.toggle_deafen.as_deref().unwrap_or_default(),
+        config.background_hotkeys
+    );
+    let changed = installed_global_input()
         .lock()
-        .map(|installed| installed.as_deref() != Some(current.as_str()))
+        .map(|installed| installed.as_deref() != Some(signature.as_str()))
         .unwrap_or(true);
     if !changed {
         return;
     }
-    let status = ptt::install_push_to_talk(voice, binding.as_deref());
-    if let Err(error) = voice.set_ptt_status(status) {
-        eprintln!("rostalk: could not report the push-to-talk status: {error}");
+    let result = ptt::install_global_input(
+        voice,
+        &config,
+        global_toggle_sink(core.clone(), voice.clone()),
+    );
+    if let Err(error) = voice.set_ptt_status(result.ptt) {
+        log::warn!(
+            "could not report the push-to-talk status: {}",
+            error.user_message()
+        );
     }
-    if let Ok(mut installed) = installed_ptt().lock() {
-        *installed = Some(current);
+    if let Err(error) = voice.set_global_input_status(result.global) {
+        log::warn!(
+            "could not report the global input status: {}",
+            error.user_message()
+        );
+    }
+    if let Ok(mut installed) = installed_global_input().lock() {
+        *installed = Some(signature);
     }
 }
 
@@ -726,6 +934,9 @@ pub fn run() {
         )
         .manage(pending_link)
         .manage(ipc::IdentityPathState::default())
+        .manage(std::sync::Arc::new(
+            native_stream::NativeStreamManager::default(),
+        ))
         .invoke_handler(invoke_handler)
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -744,6 +955,22 @@ pub fn run() {
                     economy::allow_exit();
                 }
             }
+            if let WindowEvent::Destroyed = event {
+                // A native publisher is not tied to the WebView lifetime. Do
+                // not leave an invisible stream running when the main window is
+                // destroyed by economy mode; the WebView2 path ends with it.
+                if window.label() == "main" {
+                    if let Some(manager) = window
+                        .app_handle()
+                        .try_state::<Arc<native_stream::NativeStreamManager>>()
+                    {
+                        manager.stop_active();
+                    }
+                    if let Some(voice) = window.app_handle().try_state::<VoiceHandle>() {
+                        let _ = voice.stop_stream_audio();
+                    }
+                }
+            }
         })
         .setup(move |app| {
             // Events must be mounted before the core or the voice engine can
@@ -759,8 +986,8 @@ pub fn run() {
             let voice = create_voice(app.handle(), &settings)?;
             wire_media(&core, &voice);
             // The engine started from these values; this also installs the
-            // configured push-to-talk binding and reports its status.
-            apply_voice_settings(&voice, &settings);
+            // configured global bindings and reports the push-to-talk status.
+            apply_voice_settings(&core, &voice, &settings);
             app.manage(voice);
             app.manage(core);
             apply_autostart(app.handle(), settings.autostart);
@@ -790,12 +1017,23 @@ pub fn run() {
     // With economy mode the process may legitimately have no window: the tray
     // is the way back and the core keeps voice running. Only an explicit Quit
     // (or closing a non-tray window) is allowed to end the process.
-    app.run(|_app, event| {
-        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+    app.run(|_app, event| match event {
+        tauri::RunEvent::ExitRequested { api, .. } => {
             if economy::keep_running() {
                 api.prevent_exit();
             }
         }
+        tauri::RunEvent::Exit => {
+            // Never leave a native capture thread or the computer-audio
+            // capture running after the process starts shutting down.
+            if let Some(manager) = _app.try_state::<Arc<native_stream::NativeStreamManager>>() {
+                manager.stop_active();
+            }
+            if let Some(voice) = _app.try_state::<VoiceHandle>() {
+                let _ = voice.stop_stream_audio();
+            }
+        }
+        _ => {}
     });
 }
 
@@ -835,5 +1073,28 @@ mod tests {
             is_app_url(&url("http://localhost:1420/")),
             cfg!(debug_assertions)
         );
+    }
+
+    #[test]
+    fn a_toggle_queued_in_another_session_is_dropped() {
+        let base = SessionKey {
+            server: Some("server".to_owned()),
+            self_user_id: 1,
+            channel_id: 2,
+            connected_at_unix_ms: 10,
+        };
+        assert!(session_matches(Some(&base), Some(&base.clone())));
+        let moved = SessionKey {
+            channel_id: 3,
+            ..base.clone()
+        };
+        assert!(!session_matches(Some(&base), Some(&moved)));
+        let reconnected = SessionKey {
+            connected_at_unix_ms: 11,
+            ..base.clone()
+        };
+        assert!(!session_matches(Some(&base), Some(&reconnected)));
+        assert!(!session_matches(None, Some(&base)));
+        assert!(!session_matches(Some(&base), None));
     }
 }

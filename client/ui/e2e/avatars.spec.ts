@@ -27,7 +27,9 @@ async function shot(page: Page, name: string) {
 
 async function changeAvatar(page: Page) {
   await page.getByTestId("profile-panel").click();
-  await page.getByTestId("profile-menu-avatar").click();
+  await page.getByTestId("profile-menu-profile").click();
+  await expect(page.getByTestId("settings-avatar-change")).toBeVisible();
+  await page.getByTestId("settings-avatar-change").click();
   await expect(page.getByTestId("avatar-dialog")).toBeVisible();
   await page.getByTestId("avatar-file-input").setInputFiles(picture);
   await expect(page.getByTestId("avatar-crop-image")).toBeVisible();
@@ -53,6 +55,7 @@ test.describe("stage P11 avatars", () => {
 
     await first.getByTestId("avatar-save").click();
     await expect(first.getByTestId("avatar-dialog")).toBeHidden();
+    await first.keyboard.press("Escape");
     await expect(
       first.getByTestId("profile-panel").getByTestId("avatar-image"),
     ).toBeVisible();
@@ -69,10 +72,13 @@ test.describe("stage P11 avatars", () => {
 
     // Removing it also reaches the other page.
     await first.getByTestId("profile-panel").click();
-    await first.getByTestId("profile-menu-avatar").click();
+    await first.getByTestId("profile-menu-profile").click();
+    await expect(first.getByTestId("settings-avatar-change")).toBeVisible();
+    await first.getByTestId("settings-avatar-change").click();
     await expect(first.getByTestId("avatar-remove")).toBeVisible();
     await first.getByTestId("avatar-remove").click();
     await expect(first.getByTestId("avatar-dialog")).toBeHidden();
+    await first.keyboard.press("Escape");
     await expect(
       second.getByTestId("profile-panel").getByTestId("avatar-image"),
     ).toHaveCount(0);

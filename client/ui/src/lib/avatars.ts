@@ -127,24 +127,6 @@ export async function removeAvatar(proxy: ChatProxyView): Promise<void> {
   }
 }
 
-/** Administrator action: removes another user's picture. */
-export async function resetUserAvatar(
-  proxy: ChatProxyView,
-  userId: number,
-): Promise<void> {
-  if (isFixtureProxy(proxy)) {
-    fixtureClearAvatar(userId);
-    return;
-  }
-  const response = await fetch(`${proxy.baseUrl}/members/${userId}/avatar`, {
-    method: "DELETE",
-    headers: { "X-RosTalk-Proxy-Token": proxy.token },
-  });
-  if (!response.ok) {
-    throw await proxyError(response);
-  }
-}
-
 // ------------------------------------------------------------ crop maths ---
 
 export interface AvatarCrop {

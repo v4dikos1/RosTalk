@@ -175,6 +175,19 @@ describe("UserContextMenu", () => {
     expect(screen.queryByTestId("user-menu-join")).not.toBeInTheDocument();
   });
 
+  it("has no foreign avatar reset, even for an administrator", () => {
+    const state = structuredClone(fixtureState);
+    const anya = state.users.find((user) => user.id === 2);
+    if (anya) {
+      anya.avatarHash = "a".repeat(64);
+    }
+    useCoreStore.setState({ state, hydrated: true });
+
+    render(<UserContextMenu />);
+    expect(screen.queryByTestId("user-menu-reset-avatar")).toBeNull();
+    expect(screen.queryByText("Сбросить аватар")).toBeNull();
+  });
+
   it("joins the friend's channel and reports the move", async () => {
     const join = vi.spyOn(coreApi, "joinChannel").mockResolvedValue();
     vi.spyOn(coreApi, "updateSettings").mockImplementation(

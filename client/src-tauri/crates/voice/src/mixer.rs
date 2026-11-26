@@ -13,7 +13,7 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 
 use crate::frame::FRAME_SAMPLES;
 use crate::level::{LevelSmoother, SpeakingDetector};
-use crate::leveler::Leveler;
+use crate::leveler::{Leveler, CEILING};
 
 /// Ring capacity per participant: one second of 48 kHz audio.
 const TRACK_CAPACITY: usize = 48_000;
@@ -294,13 +294,94 @@ struct MixTrack {
     detector: SpeakingDetector,
     /// Loudness leveling of this voice (stage P17); state only, no buffers.
     leveler: Leveler,
+    /// Incoming voice that may be leveled. Stream audio (music, game sound)
+    /// lives in the same mixer but must keep its own dynamics (stage P25).
+    level_audio: bool,
     level: Arc<TrackLevel>,
+}
+
+/// Final limiter recovery per block (about 0.2 s to unity).
+const MIX_LIMITER_RELEASE: f32 = 0.05;
+
+/// Peak limiter on the summed voice and stream tracks.
+///
+/// The per-track [`Leveler`] limits a voice at -1 dBFS *before* the user and
+/// master gains, and the stream is not limited by the leveler at all. At 200 %
+/// one full-scale track alone asks for +5 dBFS, and several voices exceed full
+/// scale at 100 %. The mixer used to hard-clamp that sum, which is audible
+/// distortion. This limiter stays at unity until the sum crosses -1 dBFS and
+/// then scales the whole 10 ms block by the gain its own peak requires. The
+/// block is already gathered here, so the peak is an exact look-ahead for the
+/// frame: no sample needs a sample-by-sample clamp, the waveform keeps its
+/// shape instead of a flat run at the rail, and the attack costs no latency.
+/// Recovery towards unity is spread across the following blocks. A mix below
+/// the ceiling is bit-identical, so an ordinary stream keeps its sound; event
+/// cues are added after the mixer and are not touched at all (stage P25).
+struct MixLimiter {
+    /// Gain the previous block ended with.
+    gain: f32,
+}
+
+impl MixLimiter {
+    fn new() -> Self {
+        Self { gain: 1.0 }
+    }
+
+    /// Scales the integer sum into `out`, never letting a sample pass the
+    /// ceiling. The sum may exceed the 16-bit range; it is limited before the
+    /// cast instead of being clamped sample by sample.
+    fn process(&mut self, sum: &[i32], out: &mut [i16]) {
+        let frames = sum.len().min(out.len());
+        if frames == 0 {
+            return;
+        }
+        let peak = sum[..frames]
+            .iter()
+            .map(|sample| (*sample as f32).abs() / 32_768.0)
+            .fold(0.0f32, f32::max);
+        // The largest gain that keeps this whole block under the ceiling. A
+        // block is scaled as a unit, so the sample that reaches the peak is
+        // never flattened: the samples around it keep their relative shape.
+        let target = if peak > CEILING { CEILING / peak } else { 1.0 };
+        // Move towards unity at the release rate, but never above what this
+        // block allows: a new, louder block attacks at once instead of ramping
+        // into the rail, while a quieter one recovers smoothly.
+        let recovered = self.gain + (1.0 - self.gain) * MIX_LIMITER_RELEASE;
+        let allowed = recovered.min(target);
+        let (start, end) = if allowed <= self.gain {
+            // Attack (or an unchanged gain): the new gain covers the block from
+            // its first sample, which is what keeps every sample below the
+            // ceiling without a clamp.
+            (allowed, allowed)
+        } else {
+            (self.gain, allowed)
+        };
+        let step = if frames > 1 {
+            (end - start) / (frames - 1) as f32
+        } else {
+            0.0
+        };
+        let limit = (CEILING * 32_768.0).floor();
+        for (index, (sample, slot)) in sum[..frames]
+            .iter()
+            .zip(out[..frames].iter_mut())
+            .enumerate()
+        {
+            // Computed from the index rather than accumulated, so the last
+            // sample lands exactly on `end` and the ramp never drifts.
+            let gain = start + step * index as f32;
+            *slot = ((*sample as f32) * gain).round().clamp(-limit, limit) as i16;
+        }
+        self.gain = end;
+    }
 }
 
 /// Sums all subscribed remote tracks into one output frame.
 pub struct Mixer {
     tracks: Vec<MixTrack>,
     accumulator: [i32; FRAME_SAMPLES],
+    /// Final safety limiter after all user and master gains (stage P25).
+    limiter: MixLimiter,
     /// Master playback gain, 0..2 (0..200 %), multiplied with every track.
     master: f32,
     /// Whether incoming voices are leveled to a common loudness (P17).
@@ -320,6 +401,7 @@ impl Mixer {
         Self {
             tracks: Vec::new(),
             accumulator: [0; FRAME_SAMPLES],
+            limiter: MixLimiter::new(),
             master: 1.0,
             leveling: false,
         }
@@ -351,6 +433,27 @@ impl Mixer {
         consumer: HeapCons<i16>,
         level: Arc<TrackLevel>,
     ) {
+        self.insert_track_kind(identity, consumer, level, true);
+    }
+
+    /// Adds a screen-share audio ring: volume, mute and the meters apply, but
+    /// the speech leveler must not touch music or game sound (stage P25).
+    pub fn insert_stream_track(
+        &mut self,
+        identity: &str,
+        consumer: HeapCons<i16>,
+        level: Arc<TrackLevel>,
+    ) {
+        self.insert_track_kind(identity, consumer, level, false);
+    }
+
+    fn insert_track_kind(
+        &mut self,
+        identity: &str,
+        consumer: HeapCons<i16>,
+        level: Arc<TrackLevel>,
+        level_audio: bool,
+    ) {
         if let Some(index) = self.tracks.iter().position(|t| t.identity == identity) {
             self.tracks.remove(index);
         }
@@ -363,6 +466,7 @@ impl Mixer {
             smoother: LevelSmoother::default(),
             detector: SpeakingDetector::default(),
             leveler: Leveler::new(),
+            level_audio,
             level,
         });
     }
@@ -372,6 +476,14 @@ impl Mixer {
     pub fn add_track(&mut self, identity: &str) -> (TrackPublisher, Arc<TrackLevel>) {
         let (publisher, level, consumer) = Self::create_track(identity);
         self.insert_track(identity, consumer, level.clone());
+        (publisher, level)
+    }
+
+    /// Registers a screen-share audio stream. Volume, mute and the meters
+    /// apply; loudness leveling does not (stage P25).
+    pub fn add_stream_track(&mut self, identity: &str) -> (TrackPublisher, Arc<TrackLevel>) {
+        let (publisher, level, consumer) = Self::create_track(identity);
+        self.insert_stream_track(identity, consumer, level.clone());
         (publisher, level)
     }
 
@@ -447,8 +559,10 @@ impl Mixer {
             }
             // After the meters, so the speaking indicator and the level shown
             // in the UI describe the voice as sent, and before the user's own
-            // volume, so the slider stays relative to the leveled voice.
-            if !track.leveler.is_idle(self.leveling) {
+            // volume, so the slider stays relative to the leveled voice. Stream
+            // audio keeps its own dynamics: leveling music or game sound would
+            // breathe with the scene and fight the stream volume (stage P25).
+            if track.level_audio && !track.leveler.is_idle(self.leveling) {
                 track
                     .leveler
                     .process(&mut track.scratch[..frames], self.leveling);
@@ -458,9 +572,7 @@ impl Mixer {
                 accum[index] += (f32::from(*sample) * gain) as i32;
             }
         }
-        for (index, sample) in accum.iter().enumerate() {
-            out[index] = (*sample).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-        }
+        self.limiter.process(accum, out);
         for sample in &mut out[frames..] {
             *sample = 0;
         }
@@ -509,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn mixing_clamps_instead_of_wrapping() {
+    fn mixing_limits_instead_of_wrapping() {
         let mut mixer = Mixer::new();
         let (mut a, _) = mixer.add_track("alice");
         let (mut b, _) = mixer.add_track("bob");
@@ -517,7 +629,254 @@ mod tests {
         prime(&mut b, &constant(30_000));
         let mut out = [0i16; 480];
         mixer.mix(&mut out);
-        assert!(out.iter().all(|sample| *sample == i16::MAX));
+        // The sum is 60 000 on the 32-bit accumulator; it must neither wrap to
+        // a negative value nor stay hard-clipped at the 16-bit rail.
+        let limit = (CEILING * 32_768.0).floor() as i16;
+        assert!(out.iter().all(|sample| *sample > 0));
+        assert!(
+            out.iter().all(|sample| *sample <= limit),
+            "the final mix passed the ceiling: {:?}",
+            out.iter().max()
+        );
+    }
+
+    /// Stage P25 rework: measure the final mix of several leveled voices plus a
+    /// stream at 100 % and 200 %. The per-track limiter sits before the user
+    /// and master gains, so the sum used to hard-clip; the final limiter keeps
+    /// it at -1 dBFS instead. The printed numbers are the real bounds used in
+    /// the ADR and the handoff.
+    #[test]
+    fn the_final_mix_of_voices_and_a_stream_stays_below_the_ceiling() {
+        // Worst case after the per-track limiter: each track peaks at about
+        // -1 dBFS (29 000 of 32 767).
+        let peak = constant(29_000);
+        let limit = (CEILING * 32_768.0).floor() as i32;
+        for (label, user, master) in [
+            ("100/100", 1.0f32, 1.0f32),
+            ("200/100", 2.0f32, 1.0f32),
+            ("200/200", 2.0f32, 2.0f32),
+        ] {
+            let mut mixer = Mixer::new();
+            let mut tracks = Vec::new();
+            for identity in ["alice", "bob", "carol"] {
+                let (mut voice, _) = mixer.add_track(identity);
+                prime(&mut voice, &peak);
+                mixer.set_volume(identity, user);
+                tracks.push(voice);
+            }
+            let (mut stream, _) = mixer.add_stream_track("dave#screen_share_audio");
+            prime(&mut stream, &peak);
+            mixer.set_volume("dave#screen_share_audio", user);
+            mixer.set_master_volume(master);
+            tracks.push(stream);
+
+            let mut out = [0i16; 480];
+            let mut worst = 0i32;
+            for _ in 0..60 {
+                for track in &mut tracks {
+                    track.push(&peak);
+                }
+                mixer.mix(&mut out);
+                for sample in out {
+                    worst = worst.max(i32::from(sample).abs());
+                }
+            }
+            let unclipped = 4.0 * 29_000.0 * user * master;
+            let cut_db = 20.0 * (worst as f32 / unclipped).log10();
+            eprintln!(
+                "final mix {label}: input sum {unclipped:.0} ({:.1} dBFS), peak {worst} \
+                 ({:.1} dBFS), limiter {cut_db:.1} dB",
+                20.0 * (unclipped / 32_768.0).log10(),
+                20.0 * (worst as f32 / 32_768.0).log10()
+            );
+            assert!(
+                worst <= limit + 1,
+                "{label}: the final mix clipped at {worst}"
+            );
+        }
+    }
+
+    /// The limiter must not colour a stream that is already below the ceiling:
+    /// the same samples come out bit for bit.
+    #[test]
+    fn a_stream_below_the_ceiling_passes_bit_exact() {
+        let mut mixer = Mixer::new();
+        let (mut stream, _) = mixer.add_stream_track("bob#screen_share_audio");
+        let quiet = constant(20_000);
+        prime(&mut stream, &quiet);
+        let mut out = [0i16; 480];
+        for _ in 0..10 {
+            stream.push(&quiet);
+            mixer.mix(&mut out);
+            assert!(out.iter().all(|sample| *sample == 20_000));
+        }
+    }
+
+    /// Rail of the final limiter in 16-bit units: -1 dBFS.
+    fn rail() -> i32 {
+        (CEILING * 32_768.0).floor() as i32
+    }
+
+    /// One 10 ms block of a 500 Hz cosine. `start` is the sample offset in the
+    /// continuous wave, so `start = 0` puts a full peak on the first sample and
+    /// other offsets move the peak across the block.
+    fn cosine_block(peak: f32, start: usize) -> [i32; FRAME_SAMPLES] {
+        let mut block = [0i32; FRAME_SAMPLES];
+        for (index, sample) in block.iter_mut().enumerate() {
+            let phase = 2.0 * std::f32::consts::PI * 500.0 * (start + index) as f32 / 48_000.0;
+            *sample = (peak * phase.cos()).round() as i32;
+        }
+        block
+    }
+
+    /// Index of the first pair of neighbouring samples that both sit on the
+    /// rail, i.e. a flat top. A scaled attack touches the rail at a single
+    /// sample instead.
+    fn flat_top(out: &[i16]) -> Option<usize> {
+        let edge = (rail() - 1) as u16;
+        out.windows(2)
+            .position(|pair| pair[0].unsigned_abs() >= edge && pair[1].unsigned_abs() >= edge)
+    }
+
+    /// Stage P25 rework, review §87 blocker: 500 Hz at 48 kHz with the first
+    /// peak of 115 000 on the first sample (four tracks at the track ceiling and
+    /// 200 % gains). The old 1 ms attack ramp left 33 of the first 48 samples
+    /// clamped flat at -1 dBFS, which is audible distortion. The limiter now
+    /// reads the block it has already gathered and scales it as a whole, so only
+    /// the peak sample reaches the rail and the sine keeps its shape.
+    #[test]
+    fn a_hot_sine_attack_is_scaled_not_flattened() {
+        let mut limiter = MixLimiter::new();
+        let mut out = [0i16; FRAME_SAMPLES];
+        let block = cosine_block(115_000.0, 0);
+        assert_eq!(
+            block[0], 115_000,
+            "the fixture must peak on the first sample"
+        );
+        limiter.process(&block, &mut out);
+
+        let edge = rail();
+        assert!(
+            out.iter()
+                .all(|sample| i32::from(sample.unsigned_abs()) <= edge),
+            "the block passed the ceiling"
+        );
+        if let Some(index) = flat_top(&out) {
+            panic!("the attack left a flat top at sample {index}");
+        }
+        let at_rail = out
+            .iter()
+            .filter(|sample| i32::from(sample.unsigned_abs()) >= edge - 1)
+            .count();
+        eprintln!(
+            "hot attack: input peak {} -> output peak {} (rail {edge}), \
+             {at_rail} sample(s) on the rail, neighbour {}",
+            block[0], out[0], out[1]
+        );
+        // One sample at the rail, its neighbours clearly below: the output is a
+        // quieter sine, not a clipped one.
+        assert!(i32::from(out[0].unsigned_abs()) >= edge - 1);
+        assert!(i32::from(out[1].unsigned_abs()) < edge - 4);
+    }
+
+    /// The guard must hold for peaks that fall on any sample of the block and
+    /// for levels just above the ceiling as well as far above it.
+    #[test]
+    fn attacks_from_any_sample_hold_the_ceiling_without_a_flat_top() {
+        let edge = rail();
+        for peak in [
+            115_000.0f32,
+            90_000.0,
+            60_000.0,
+            40_000.0,
+            29_205.0,
+            20_000.0,
+            29_204.0,
+        ] {
+            for start in [0usize, 7, 23, 48, 95, 191] {
+                let input = cosine_block(peak, start);
+                let mut limiter = MixLimiter::new();
+                let mut out = [0i16; FRAME_SAMPLES];
+                limiter.process(&input, &mut out);
+                assert!(
+                    out.iter()
+                        .all(|sample| i32::from(sample.unsigned_abs()) <= edge),
+                    "peak {peak} at offset {start} passed the ceiling"
+                );
+                if let Some(index) = flat_top(&out) {
+                    panic!("peak {peak} at offset {start} left a flat top at {index}");
+                }
+                if peak <= edge as f32 {
+                    // A mix at or below the ceiling stays bit-exact.
+                    assert!(
+                        out.iter()
+                            .zip(input.iter())
+                            .all(|(out, input)| i32::from(*out) == *input),
+                        "peak {peak} at offset {start} was coloured below the ceiling"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Repeated attacks and the recovery between them: every burst stays under
+    /// the ceiling without a flat top, and after the loud part the gain returns
+    /// smoothly — a quiet mix is never stepped and ends bit-exact.
+    #[test]
+    fn repeated_attacks_recover_without_a_step() {
+        let edge = rail();
+        let mut limiter = MixLimiter::new();
+        let mut out = [0i16; FRAME_SAMPLES];
+        for round in 0..4 {
+            for peak in [115_000.0f32, 60_000.0] {
+                limiter.process(&cosine_block(peak, round * 13), &mut out);
+                assert!(
+                    out.iter()
+                        .all(|sample| i32::from(sample.unsigned_abs()) <= edge),
+                    "round {round}, peak {peak}: the burst passed the ceiling"
+                );
+                if let Some(index) = flat_top(&out) {
+                    panic!("round {round}, peak {peak}: flat top at sample {index}");
+                }
+            }
+        }
+
+        // The button of the level goes quiet: a DC mix at -12 dBFS. The gain
+        // may only rise, by a fraction of a decibel per block, never in a step.
+        let quiet = 8_000i16;
+        let quiet_block = [i32::from(quiet); FRAME_SAMPLES];
+        limiter.process(&quiet_block, &mut out);
+        assert!(
+            out[0] < quiet / 2,
+            "the gain did not stay reduced after the attack: {}",
+            out[0]
+        );
+        let mut previous = out[0];
+        let mut biggest_step = 0i16;
+        for block in 0..=260 {
+            if block > 0 {
+                limiter.process(&quiet_block, &mut out);
+            }
+            for (index, sample) in out.iter().enumerate() {
+                if block == 0 && index == 0 {
+                    continue;
+                }
+                assert!(
+                    *sample >= previous,
+                    "the gain fell back in block {block}: {sample} < {previous}"
+                );
+                biggest_step = biggest_step.max(*sample - previous);
+                previous = *sample;
+            }
+        }
+        assert_eq!(
+            previous, quiet,
+            "the gain never returned to unity after the release"
+        );
+        assert!(
+            biggest_step <= 2,
+            "the recovery stepped audibly: {biggest_step} LSB"
+        );
     }
 
     #[test]
@@ -570,6 +929,45 @@ mod tests {
         // The meter reports the voice as received (about -4 dBFS), not the
         // leveled one (about -22 dBFS).
         assert!(level.level_db() > -8.0, "meter was {}", level.level_db());
+    }
+
+    /// Stage P25: leveling is for speech. Game and music audio share the
+    /// mixer, so it must pass through with its own dynamics; only the voice
+    /// track may move.
+    #[test]
+    fn leveling_raises_a_voice_but_leaves_stream_audio_alone() {
+        let mut mixer = Mixer::new();
+        mixer.set_leveling(true);
+        let (mut voice, _) = mixer.add_track("alice");
+        let (mut stream, _) = mixer.add_stream_track("bob#screen_share_audio");
+        let quiet = constant(400);
+        prime(&mut voice, &quiet);
+        prime(&mut stream, &quiet);
+        let mut out = [0i16; 480];
+        let mut last = 0i16;
+        for _ in 0..900 {
+            voice.push(&quiet);
+            stream.push(&quiet);
+            mixer.mix(&mut out);
+            last = out[479];
+        }
+        assert!(
+            last > 400,
+            "the voice was not leveled at all: {last} on top of the stream"
+        );
+        // Mute the voice: what remains is the stream track alone. It must be
+        // bit-identical to its input even though leveling is on.
+        mixer.set_muted("alice", true);
+        for _ in 0..10 {
+            voice.push(&quiet);
+            stream.push(&quiet);
+            mixer.mix(&mut out);
+            assert!(
+                out.iter().all(|sample| *sample == 400),
+                "the stream audio was leveled: {}",
+                out[479]
+            );
+        }
     }
 
     #[test]

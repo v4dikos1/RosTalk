@@ -97,6 +97,8 @@ export const en: typeof ru = {
     noChannel: "Not in a channel",
     show: "Show members",
     hide: "Hide members",
+    openAvatar: "Open avatar: {{name}}",
+    openProfile: "Open profile",
   },
   tree: {
     label: "Channels",
@@ -490,7 +492,7 @@ export const en: typeof ru = {
     threshold: "Activation threshold",
     thresholdHint: "The meter must cross the threshold before others hear you.",
     pttHint:
-      "Assign the key on the Hotkeys tab. It works in the background, including in games.",
+      "Assign the key on the Hotkeys tab. A single key or mouse button works in the background, including in games; a Ctrl, Shift or Alt combination works after enabling the background combinations switch.",
     pttUnbound:
       "No PTT key is assigned. The mouse side buttons work by default; assign a key in settings.",
     transmission: "Transmission",
@@ -561,6 +563,15 @@ export const en: typeof ru = {
     hotkeys: {
       title: "Hotkeys",
       hint: "Click a shortcut and press a new one. Backspace clears it, Esc cancels.",
+      globalHint:
+        "A single key or mouse button works in the background, including in a game. Ctrl, Shift or Alt combinations use the switch below. Other actions work while the RosTalk window is focused.",
+      background: "Background combinations",
+      backgroundHint:
+        "Capture Ctrl, Shift or Alt combinations while a game is focused. Off by default; a single key or mouse button works in the background without it.",
+      pttNeedsSingleKey:
+        "Push-to-talk in a game needs a single key or mouse button, or the background combinations switch.",
+      registrationError: "Global input is not running: {{error}}",
+      pttError: "Push-to-talk is unavailable: {{error}}",
       capturing: "Press keys…",
       unbound: "Not assigned",
       reset: "Restore defaults",
@@ -639,7 +650,6 @@ export const en: typeof ru = {
   profileMenu: {
     title: "Profile",
     profile: "Profile",
-    changeAvatar: "Change avatar",
     settings: "Settings",
     switchServer: "Switch server",
     quit: "Quit",
@@ -649,9 +659,17 @@ export const en: typeof ru = {
     hint: "PNG, JPEG, WebP or GIF up to 4 MiB. The picture is cropped to a 256×256 square.",
     empty: "Choose a picture to crop it to a square",
     choose: "Choose file",
+    change: "Change avatar",
     remove: "Remove avatar",
     zoom: "Zoom",
     saving: "Saving…",
+    viewer: {
+      title: "Avatar: {{name}}",
+      imageAlt: "Avatar of {{name}}",
+      missing: "This member has no avatar — initials are shown",
+      unavailable: "The avatar is unavailable — initials are shown",
+      savedSize: "Stored size: {{size}} × {{size}}",
+    },
     errors: {
       tooLarge: "The file is larger than 4 MiB",
       unsupported: "Use a PNG, JPEG, WebP or GIF picture",
@@ -712,7 +730,6 @@ export const en: typeof ru = {
     confirmBan: "Block",
     confirmKick: "Disconnect",
     audioSettings: "Sound settings",
-    resetAvatar: "Reset avatar",
   },
   admin: {
     title: "Administration",
@@ -1025,6 +1042,14 @@ export const en: typeof ru = {
     messagesLabel: "Message feed",
     messageActions: "Message actions",
     imagePreview: "Image preview",
+    copyImage: "Copy image",
+    copyImageCopied: "Image copied to the clipboard",
+    copyImageFailed: "Could not copy the image",
+    copyImageGone: "The attachment was deleted",
+    copyImageNoAccess: "You no longer have access to this attachment",
+    copyImageBroken: "The image is damaged and cannot be copied",
+    copyImageTooLarge: "The image is too large to copy",
+    copyImageClipboardBusy: "The clipboard is busy. Try again",
     placeholder: "Message in #{{channel}}",
     dmPlaceholder: "Message to {{name}}",
     send: "Send",
@@ -1101,6 +1126,35 @@ export const en: typeof ru = {
     stop: "Stop the stream",
     startTitle: "Share your screen",
     startHint: "Pick the quality.",
+    nativeMode: "Native capture (experimental)",
+    nativeHint:
+      "Windows capture without the WebView2 badge. Watching other streams pauses while you share in this mode.",
+    nativeDesktopOnly: "Available in the desktop client.",
+    nativeChecking: "Checking native capture support…",
+    nativeUnavailable:
+      "Native capture is unavailable on this system; the WebView2 mode still works.",
+    nativePickerHint:
+      "The system picker opens next: choose a window or a screen. Cancelling does not start a capture.",
+    nativeCursorHidden:
+      "The system cursor is hidden; a cursor drawn by the game stays in the frame.",
+    nativeBorderStays:
+      "This Windows build keeps the capture border visible.",
+    nativeBorderHint:
+      "The app asked the OS to hide it; this build does not have that API. The system cursor is still hidden.",
+    nativeParticipantNote:
+      "Native capture uses your stream participant: watching other streams pauses until it stops.",
+    nativeCancelled: "The source picker was cancelled; nothing was captured.",
+    nativeBorderNotice:
+      "Windows keeps the capture border on this build; the system cursor is hidden.",
+    nativeTile: "Native capture — system cursor hidden",
+    nativeReconnecting: "Native capture — reconnecting…",
+    nativeSourceClosed: "The selected window was closed; the stream ended.",
+    nativeEnded: "The native stream ended.",
+    nativeCursorFailed:
+      "The system cursor could not be hidden; the native stream was stopped.",
+    nativePicking: "Choose a source…",
+    useWebviewFallback:
+      "Switch to WebView2 (the system cursor will be visible)",
     preset: "Quality",
     presetSource: "Source (up to 1440p · 60)",
     systemAudio: "System sound",
@@ -1122,6 +1176,8 @@ export const en: typeof ru = {
     failedHint: "Check the connection and try again.",
     stateEnded: "The stream has ended",
     close: "Close",
+    unwatch: "Stop watching",
+    unwatchHint: "Stop watching {{name}}’s stream and turn its sound off",
     fullscreen: "Full screen",
     exitFullscreen: "Leave fullscreen",
     stats: "Statistics",
@@ -1166,6 +1222,8 @@ export const en: typeof ru = {
     settings: "Settings",
     connected: "Voice channel",
     notConnected: "Not in a channel",
+    voiceGroup: "Voice actions",
+    leaveHint: "Leave voice channel “{{channel}}”",
     transmitting: "Transmitting",
   },
   settings: {

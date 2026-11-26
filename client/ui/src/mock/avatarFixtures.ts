@@ -13,6 +13,48 @@ import { fixtureState } from "./fixtures";
 const STORAGE_KEY = "rostalk.fixture.avatars.v1";
 const CHANNEL_NAME = "rostalk.fixture.avatars";
 
+/**
+ * A tiny demo picture for the gallery and Playwright. The URL host is the
+ * fixture adapter, not a real server, so this is only ever used in a browser
+ * preview. `?demoAvatarUser=2` seeds a stored avatar for that user;
+ * `?demoAvatarUnavailable=1` keeps only the hash, which exercises the
+ * "picture failed" state without inventing a second code path.
+ */
+const DEMO_AVATAR_HASH = "c".repeat(64);
+const DEMO_AVATAR =
+  "data:image/svg+xml;charset=utf-8," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256">' +
+      '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
+      '<stop offset="0" stop-color="#5b8def"/><stop offset="1" stop-color="#8f6bd8"/>' +
+      "</linearGradient></defs>" +
+      '<rect width="256" height="256" fill="url(#g)"/>' +
+      '<circle cx="128" cy="102" r="38" fill="#ffffff" fill-opacity=".9"/>' +
+      '<rect x="64" y="154" width="128" height="64" rx="32" fill="#ffffff" fill-opacity=".9"/>' +
+      "</svg>",
+  );
+
+function applyDemoAvatar(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const id = Number(params.get("demoAvatarUser"));
+  if (!Number.isInteger(id) || id <= 0) {
+    return;
+  }
+  const user = fixtureState.users.find((item) => item.id === id);
+  if (!user) {
+    return;
+  }
+  user.avatarHash = DEMO_AVATAR_HASH;
+  if (!params.has("demoAvatarUnavailable")) {
+    const store = readStore();
+    store[DEMO_AVATAR_HASH] = DEMO_AVATAR;
+    writeStore(store);
+  }
+}
+
 export interface FixtureAvatarChange {
   userId: number;
   hash: string;
@@ -108,9 +150,11 @@ export async function fixtureUploadAvatar(picture: Blob): Promise<string> {
   return hash;
 }
 
-/** Mimics `DELETE /avatars/me` or the moderator reset. */
-export function fixtureClearAvatar(userId = fixtureState.selfUserId): void {
-  const change = { userId, hash: "" };
+/** Mimics `DELETE /avatars/me`; only the fixture user's own picture. */
+export function fixtureClearAvatar(): void {
+  const change = { userId: fixtureState.selfUserId, hash: "" };
   notify(change);
   channel?.postMessage(change);
 }
+
+applyDemoAvatar();

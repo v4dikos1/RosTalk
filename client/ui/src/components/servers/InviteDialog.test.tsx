@@ -4,9 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { i18n } from "@/i18n";
 import { fixtureState } from "@/mock/fixtures";
+import { useAppStore } from "@/store/appStore";
 import { useCoreStore } from "@/store/coreStore";
 
-import { InvitePopover } from "./InvitePopover";
+import { InviteDialog } from "./InviteDialog";
 
 const { sendAdminMock, createMock } = vi.hoisted(() => ({
   sendAdminMock: vi.fn(),
@@ -29,9 +30,10 @@ function prepare(permissions: string[]) {
     pending: [],
     actionError: null,
   });
+  useAppStore.setState({ inviteOpen: true });
 }
 
-describe("InvitePopover", () => {
+describe("InviteDialog", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     sendAdminMock.mockResolvedValue({});
@@ -41,9 +43,8 @@ describe("InvitePopover", () => {
   it("creates a 24h Member invite and shows the link once", async () => {
     const user = userEvent.setup();
     prepare(["manageInvites"]);
-    render(<InvitePopover />);
+    render(<InviteDialog />);
 
-    await user.click(screen.getByTestId("invite-open"));
     await user.click(screen.getByTestId("invite-create"));
 
     await waitFor(() =>
@@ -59,13 +60,10 @@ describe("InvitePopover", () => {
     });
   });
 
-  it("explains that an administrator has to create the invite", async () => {
-    const user = userEvent.setup();
+  it("explains that an administrator has to create the invite", () => {
     prepare(["speak"]);
-    render(<InvitePopover />);
-
-    await user.click(screen.getByTestId("invite-open"));
-    expect(screen.getByTestId("invite-popover")).toHaveTextContent(
+    render(<InviteDialog />);
+    expect(screen.getByTestId("invite-dialog")).toHaveTextContent(
       "Приглашения создаёт админ сервера",
     );
     expect(screen.queryByTestId("invite-create")).not.toBeInTheDocument();

@@ -6,9 +6,11 @@
 //! request and forwards history, uploads and attachment reads over a TLS
 //! connection pinned to the leaf fingerprint from the active invite link.
 //!
-//! Only the three chat routes exist. There is no generic forwarder, so a page
-//! script cannot turn the proxy into an open client for the server. The token
-//! and the session token are never logged.
+//! Only the chat routes and the self-service avatar routes exist. There is no
+//! generic forwarder, so a page script cannot turn the proxy into an open
+//! client for the server. The token and the session token are never logged.
+//! Another user's avatar can only be read: the former cross-user reset route
+//! is gone on both the server and the proxy (stage P27).
 //!
 //! Attachment reads are the one route a page may call with the token in the
 //! query string: an `<img src>` or a `<video src>` cannot set a header. Because
@@ -243,8 +245,7 @@ async fn route(
         || attachment
         || avatar
         || avatar_upload
-        || (method == Method::DELETE && path == "/avatars/me")
-        || (method == Method::DELETE && member_avatar_id(&path).is_some());
+        || (method == Method::DELETE && path == "/avatars/me");
     if !allowed {
         return Ok(status_response(StatusCode::NOT_FOUND, "not_found"));
     }
@@ -538,15 +539,6 @@ fn avatar_hash(path: &str) -> Option<&str> {
         return None;
     }
     Some(hash)
-}
-
-/// Returns the numeric id of `/members/<id>/avatar`.
-fn member_avatar_id(path: &str) -> Option<&str> {
-    let id = path.strip_prefix("/members/")?.strip_suffix("/avatar")?;
-    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    Some(id)
 }
 
 /// One upstream response head plus its streaming body.
@@ -1269,16 +1261,6 @@ mod tests {
         ] {
             assert_eq!(avatar_hash(path), None, "path {path}");
         }
-        assert_eq!(member_avatar_id("/members/7/avatar"), Some("7"));
-        for path in [
-            "/members/avatar",
-            "/members//avatar",
-            "/members/../avatar",
-            "/members/7/avatar/extra",
-            "/members/-1/avatar",
-        ] {
-            assert_eq!(member_avatar_id(path), None, "path {path}");
-        }
     }
 
     #[tokio::test]
@@ -1340,8 +1322,10 @@ mod tests {
 
     #[tokio::test]
     async fn avatar_upload_routes_stay_behind_the_proxy_token() {
-        let (authority, fingerprint) = mock_upstream(
+        let capture = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (authority, fingerprint) = mock_upstream_capturing(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            Some(capture.clone()),
         )
         .await;
         let link = InviteLink::parse(&format!(
@@ -1368,12 +1352,24 @@ mod tests {
         for request in [
             format!("PUT /avatars/me HTTP/1.1\r\nHost: x\r\nX-RosTalk-Proxy-Token: {token}\r\nContent-Type: image/png\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
             format!("DELETE /avatars/me HTTP/1.1\r\nHost: x\r\nX-RosTalk-Proxy-Token: {token}\r\nConnection: close\r\n\r\n"),
-            format!("DELETE /members/7/avatar HTTP/1.1\r\nHost: x\r\nX-RosTalk-Proxy-Token: {token}\r\nConnection: close\r\n\r\n"),
             format!("GET /avatars/{hash} HTTP/1.1\r\nHost: x\r\nX-RosTalk-Proxy-Token: {token}\r\nConnection: close\r\n\r\n"),
         ] {
             let response = ask(&proxy, &request).await;
             assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         }
+
+        // Stage P27: the cross-user reset route was removed on the server, and
+        // the proxy no longer has a route for it either. An old page cannot
+        // reach the server through the proxy.
+        let legacy_reset = ask(
+            &proxy,
+            &format!(
+                "DELETE /members/7/avatar HTTP/1.1\r\nHost: x\r\nX-RosTalk-Proxy-Token: {token}\r\nConnection: close\r\n\r\n"
+            ),
+        )
+        .await;
+        assert!(legacy_reset.starts_with("HTTP/1.1 404"), "{legacy_reset}");
+        assert!(legacy_reset.contains("not_found"), "{legacy_reset}");
 
         for path in [
             "/avatars/../admin",
@@ -1390,6 +1386,17 @@ mod tests {
             .await;
             assert!(response.starts_with("HTTP/1.1 404"), "{path}: {response}");
         }
+
+        let requests = capture.lock().expect("capture").clone();
+        assert_eq!(
+            requests.len(),
+            3,
+            "a refused route reached the server: {requests:?}"
+        );
+        assert!(
+            requests.iter().all(|line| !line.contains("/members/")),
+            "{requests:?}"
+        );
     }
 
     #[tokio::test]

@@ -5,7 +5,6 @@ import {
   Check,
   ClipboardPaste,
   Fingerprint,
-  Flame,
   Headphones,
   Link2,
   Mic,
@@ -20,6 +19,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { CertificatePanel } from "@/components/connect/CertificatePanel";
+import { BrandMark } from "@/components/common/BrandMark";
 import { ErrorNotice } from "@/components/common/ErrorNotice";
 import { LevelMeter } from "@/components/voice/LevelMeter";
 import { Button } from "@/components/ui/button";
@@ -341,7 +341,10 @@ export function OnboardingWizard() {
   const theme = settings.theme;
   const locale = settings.locale;
   const gate = settings.voice.gate;
-  const threshold = gate.mode === "voiceActivation" ? gate.threshold_db ?? -45 : -45;
+  const threshold =
+    gate.mode === "voiceActivation"
+      ? gate.threshold_db ?? settings.voice.activationThresholdDb ?? -45
+      : settings.voice.activationThresholdDb ?? -45;
   const linkReason =
     step !== "link"
       ? null
@@ -384,8 +387,8 @@ export function OnboardingWizard() {
         className="flex w-full max-w-[620px] flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-panel"
       >
         <header className="flex items-center gap-3 border-b border-border px-5 py-4">
-          <span className="flex size-10 items-center justify-center rounded-md bg-accent/15 text-accent">
-            <Flame className="size-5" aria-hidden />
+          <span className="flex size-10 items-center justify-center rounded-md bg-accent/15">
+            <BrandMark className="size-5" />
           </span>
           <div className="min-w-0 flex-1">
             <h1 className="text-[15px] font-semibold text-foreground">
@@ -868,6 +871,7 @@ export function OnboardingWizard() {
                     value={gate.mode}
                     onChange={(mode) =>
                       void updateVoice({
+                        activationThresholdDb: threshold,
                         gate:
                           mode === "voiceActivation"
                             ? {
@@ -908,6 +912,7 @@ export function OnboardingWizard() {
                       aria-label={t("voice.threshold")}
                       onChange={(event) =>
                         void updateVoice({
+                          activationThresholdDb: Number(event.target.value),
                           gate: {
                             mode: "voiceActivation",
                             threshold_db: Number(event.target.value),

@@ -58,6 +58,13 @@ function voiceState(channelId: number): VoiceState {
     micTest: false,
     gate: { mode: "voiceActivation", threshold_db: -45, hold_ms: 300 },
     pushToTalk: { hook: "unknown", binding: "X1/X2", error: null },
+    globalInput: {
+      registered: false,
+      keyboardCaptured: false,
+      pushToTalk: false,
+      toggleMute: false,
+      toggleDeafen: false,
+    },
     inputDevice: null,
     outputDevice: null,
     error: null,

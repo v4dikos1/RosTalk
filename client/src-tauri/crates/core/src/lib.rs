@@ -24,8 +24,8 @@ pub mod stream_proxy;
 pub mod tls;
 
 pub use engine::{
-    ConnectRequest, ConnectTarget, CoreHandle, IdentityInfo, StreamCredentialsView,
-    VoiceMediaCredentials, VoiceStatePatch,
+    ConnectRequest, ConnectTarget, CoreHandle, IdentityInfo, NativeStreamConfig,
+    StreamCredentialsView, VoiceMediaCredentials, VoiceStatePatch, VoiceToggle,
 };
 pub use error::{CoreError, CoreErrorCode, ServerErrorCode};
 pub use identity::IdentityProvider;

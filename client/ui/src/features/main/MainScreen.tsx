@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   ArrowRight,
-  Flame,
   ClipboardPaste,
   LogIn,
   MessageCircle,
@@ -17,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { ChatPanel } from "@/components/chat/ChatPanel";
+import { BrandMark } from "@/components/common/BrandMark";
 import { ConnectionBanner } from "@/components/common/ConnectionBanner";
 import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 import { UserAvatar } from "@/components/common/UserAvatar";
@@ -43,7 +43,6 @@ import {
 import {
   defaultVoiceChannel,
   joinVoiceChannel,
-  leaveVoiceChannel,
 } from "@/lib/channels";
 import { conversationKey } from "@/lib/chat";
 import { coreErrorText } from "@/lib/coreError";
@@ -104,8 +103,8 @@ function ConnectingPanel() {
       className="flex min-h-0 flex-1 items-center justify-center p-6"
     >
       <div className="w-full max-w-sm rounded-lg border border-border bg-surface p-6 text-center">
-        <span className="mx-auto flex size-11 items-center justify-center rounded-md bg-accent/15 text-accent">
-          <Flame className="size-5" aria-hidden />
+        <span className="mx-auto flex size-11 items-center justify-center rounded-md bg-accent/15">
+          <BrandMark className="size-5" />
         </span>
         <h2 className="mt-3 text-[15px] font-semibold text-foreground">
           {t("states.connectingTitle")}
@@ -259,8 +258,8 @@ function StateScreen() {
       className="flex min-h-0 flex-1 items-center justify-center p-6"
     >
       <div className="w-full max-w-md rounded-lg border border-border bg-surface p-6 text-center">
-        <span className="mx-auto flex size-11 items-center justify-center rounded-md bg-accent/15 text-accent">
-          <Flame className="size-5" aria-hidden />
+        <span className="mx-auto flex size-11 items-center justify-center rounded-md bg-accent/15">
+          <BrandMark className="size-5" />
         </span>
         <h2 className="mt-3 text-[15px] font-semibold text-foreground">
           {t("states.welcomeTitle")}
@@ -374,6 +373,7 @@ export function MainScreen() {
   const selectedChannelId = useAppStore((app) => app.selectedChannelId);
   const selectChannel = useAppStore((app) => app.selectChannel);
   const openUserMenu = useAppStore((app) => app.openUserMenu);
+  const openSettings = useAppStore((app) => app.openSettings);
   const dmPeerId = useAppStore((app) => app.dmPeerId);
   const closeDm = useAppStore((app) => app.closeDm);
   const view = useAppStore((app) => app.view);
@@ -583,7 +583,6 @@ export function MainScreen() {
                 memberCount={memberCount}
                 connected={self?.channelId === channel.id}
                 onJoin={() => void joinVoiceChannel(channel.id)}
-                onLeave={() => void leaveVoiceChannel()}
                 streamingCount={streamingUsers.length}
                 selfStreaming={selfStreaming && self?.channelId === channel.id}
                 onWatchStreams={() => {
@@ -640,6 +639,7 @@ export function MainScreen() {
             onUserMenu={(user, position) => {
               openUserMenu(user.id, position.x, position.y);
             }}
+            onOpenProfile={() => openSettings("profile")}
           />
         ) : null}
       </div>

@@ -7,12 +7,12 @@ import (
 	"os"
 
 	"github.com/v4dikos1/RosTalk/server/internal/avatars"
-	"github.com/v4dikos1/RosTalk/server/internal/perms"
 	"github.com/v4dikos1/RosTalk/server/internal/store"
 )
 
-// Avatars are user pictures (stage P11). The owner sets and removes their own
-// picture with a user session token; an administrator may reset someone else's.
+// Avatars are user pictures (stage P11). Only the owner sets and removes their
+// own picture with a user session token (stage P27). Nobody may reset another
+// user's avatar, not even an administrator: the old member route is gone.
 // The service decodes and re-encodes the bytes, so the endpoints accept only a
 // PNG, JPEG, WebP or GIF body and never a file name.
 
@@ -76,30 +76,6 @@ func (s *Server) handleAvatarGet(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	w.Header().Set("ETag", `"`+avatar.Hash+`"`)
 	http.ServeContent(w, r, "", avatar.ModTime, file)
-}
-
-// handleMemberAvatarReset lets an administrator remove another user's picture.
-// The target may be offline: the database is the source of the hash.
-func (s *Server) handleMemberAvatarReset(w http.ResponseWriter, r *http.Request) {
-	p, authErr := s.authenticate(r)
-	if authErr != nil {
-		writeAPIError(w, authErr)
-		return
-	}
-	if !perms.HasManageServer(p.subject) {
-		writeError(w, http.StatusForbidden, "permission_denied", "you may not reset another user's avatar")
-		return
-	}
-	id, ok := pathID(w, r)
-	if !ok {
-		return
-	}
-	if err := s.avatars.Clear(r.Context(), int64(id)); err != nil {
-		writeAvatarError(w, err)
-		return
-	}
-	s.auditAvatar(r.Context(), p, "member.avatar_reset", int64(id), "")
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) auditAvatar(ctx context.Context, p principal, action string, targetUser int64, details string) {

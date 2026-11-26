@@ -1,7 +1,8 @@
-import { Flame, X } from "lucide-react";
+import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { BrandMark } from "@/components/common/BrandMark";
 import { useSettingsStore } from "@/store/settingsStore";
 
 const SEEN_KEY = "rostalk.trayHintSeen";
@@ -62,7 +63,7 @@ export function TrayHint() {
       data-testid="tray-hint"
       className="animate-fade-in fixed bottom-16 left-1/2 z-30 flex max-w-[420px] -translate-x-1/2 items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-[12px] text-foreground shadow-panel"
     >
-      <Flame className="size-4 shrink-0 text-accent" aria-hidden />
+      <BrandMark className="size-4 shrink-0" />
       <span className="min-w-0 flex-1">{t("app.trayHint")}</span>
       <button
         type="button"

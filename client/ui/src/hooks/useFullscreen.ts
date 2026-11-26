@@ -7,6 +7,8 @@ export interface FullscreenControls {
   active: boolean;
   /** Enters when inactive, leaves when active. */
   toggle: () => Promise<void>;
+  /** Leaves DOM and desktop-window fullscreen without entering again. */
+  exit: () => Promise<void>;
 }
 
 /**
@@ -120,5 +122,5 @@ export function useFullscreen(
     return () => window.removeEventListener("keydown", onKey);
   }, [active, leave]);
 
-  return { active, toggle };
+  return { active, toggle, exit: leave };
 }

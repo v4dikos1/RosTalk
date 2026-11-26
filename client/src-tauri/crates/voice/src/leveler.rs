@@ -9,8 +9,8 @@
 //!
 //! 1. A 10 ms frame above [`ACTIVE_FLOOR_DB`] updates a smoothed speech level
 //!    (RMS in dB, attack 0.5 s, release 2.5 s). Pauses and noise never move
-//!    the estimate, so the leveler does not pump the room tone up between
-//!    sentences.
+//!    the estimate, and only active frames receive the gain, so the leveler
+//!    does not pump the room tone up between sentences (stage P25 rework).
 //! 2. The wanted gain is `TARGET_DB - level`, clamped to
 //!    [`MIN_GAIN_DB`]..[`MAX_GAIN_DB`], and the applied gain follows it with a
 //!    slew limit: up at 3 dB/s, down at 10 dB/s.
@@ -31,7 +31,13 @@ pub const ACTIVE_FLOOR_DB: f32 = -50.0;
 /// Largest cut: a shouting participant is lowered by at most this much.
 pub const MIN_GAIN_DB: f32 = -12.0;
 /// Largest boost: a quiet microphone is raised by at most this much.
-pub const MAX_GAIN_DB: f32 = 12.0;
+///
+/// 24 dB reaches the target from a speech level of about -46 dBFS. The old
+/// 12 dB limit stopped at -34 dBFS, so a quiet headset stayed 6-14 dB below a
+/// normal one even with leveling on (stage P25). The peak limiter still caps
+/// every frame at [`CEILING`], and frames below [`ACTIVE_FLOOR_DB`] do not
+/// move the estimate, so this does not pump the room tone of a healthy mic.
+pub const MAX_GAIN_DB: f32 = 24.0;
 /// Peak ceiling after the gain: -1 dBFS in the 0..1 scale.
 pub const CEILING: f32 = 0.891_25;
 
@@ -107,9 +113,15 @@ impl Leveler {
         if frame.is_empty() {
             return;
         }
-        if enabled {
-            self.track_level(frame);
-        }
+        // Only an active speech frame is boosted. The estimate already ignores
+        // room tone, but applying the gain it produced to the pauses still
+        // amplified them; a quiet headset with +24 dB turned the noise between
+        // words into audible pumping (stage P25 rework). The previous-frame
+        // ramp below keeps the switch between boosted speech and unboosted
+        // noise free of clicks, and a quiet word (above the floor) gets the
+        // full gain on its first active frame, so the words themselves are not
+        // eaten.
+        let active = enabled && self.track_level(frame);
         let wanted = if enabled {
             self.level_db.map_or(0.0, |level| {
                 (TARGET_DB - level).clamp(MIN_GAIN_DB, MAX_GAIN_DB)
@@ -128,7 +140,8 @@ impl Leveler {
         if (self.gain_db - wanted).abs() < 1e-4 {
             self.gain_db = wanted;
         }
-        let mut gain = db_to_amplitude(self.gain_db);
+        let applied_db = if active { self.gain_db } else { 0.0 };
+        let mut gain = db_to_amplitude(applied_db);
 
         // Peak limiter: the reduction is instant, the release is gradual.
         self.limiter += (1.0 - self.limiter) * LIMITER_RELEASE;
@@ -167,10 +180,12 @@ impl Leveler {
         self.previous = gain;
     }
 
-    fn track_level(&mut self, frame: &[i16]) {
+    /// Updates the speech estimate; returns whether this frame is active
+    /// speech (above [`ACTIVE_FLOOR_DB`]) and may receive the leveling gain.
+    fn track_level(&mut self, frame: &[i16]) -> bool {
         let frame_db = frame_level_db(frame);
         if frame_db <= SILENCE_DB || frame_db < ACTIVE_FLOOR_DB {
-            return;
+            return false;
         }
         self.level_db = Some(match self.level_db {
             None => frame_db,
@@ -183,6 +198,7 @@ impl Leveler {
                 level + coefficient * (frame_db - level)
             }
         });
+        true
     }
 }
 
@@ -264,6 +280,26 @@ mod tests {
         assert!((loud.gain_db() - MIN_GAIN_DB).abs() < 0.01);
     }
 
+    /// Stage P25: a quiet headset that sits 18-24 dB below a normal one must
+    /// still land on the target instead of stopping at the old +12 dB limit.
+    #[test]
+    fn a_very_quiet_voice_reaches_the_common_target() {
+        for input in [-40.0f32, -44.0, -46.0] {
+            let mut leveler = Leveler::new();
+            let mut tone = Tone::new(input);
+            let settled = run(&mut leveler, &mut tone, 900, true);
+            assert!(
+                (settled - TARGET_DB).abs() < 1.5,
+                "{input:.0} dBFS settled at {settled:.1} dB (gain {:.1} dB)",
+                leveler.gain_db()
+            );
+            assert!(
+                leveler.gain_db() > 12.0,
+                "{input:.0} dBFS still used the old 12 dB ceiling"
+            );
+        }
+    }
+
     #[test]
     fn room_tone_below_the_floor_is_never_boosted() {
         let mut leveler = Leveler::new();
@@ -284,6 +320,47 @@ mod tests {
         let mut silence = Tone::new(-70.0);
         run(&mut leveler, &mut silence, 500, true);
         assert!((leveler.gain_db() - before).abs() < 0.01);
+    }
+
+    /// Stage P25 rework: a quiet voice builds +24 dB, then stops. The room
+    /// tone in the pause must not be lifted by that gain; only the speech was
+    /// leveled. The estimate itself holds the speech level, so the next quiet
+    /// word is boosted again at once.
+    #[test]
+    fn a_noise_pause_after_quiet_speech_is_not_amplified() {
+        let mut leveler = Leveler::new();
+        let mut speech = Tone::new(-46.0);
+        run(&mut leveler, &mut speech, 900, true);
+        let gain = leveler.gain_db();
+        assert!(gain > 20.0, "the quiet voice was not leveled: {gain:.1} dB");
+
+        // Two seconds of -58 dBFS room tone: well above digital silence, well
+        // below the active-speech floor.
+        let mut noise = Tone::new(-58.0);
+        run(&mut leveler, &mut noise, 200, true);
+        let mut frame = noise.frame();
+        leveler.process(&mut frame, true);
+        let paused = frame_level_db(&frame);
+        assert!(
+            (paused - -58.0).abs() < 1.0,
+            "the pause noise was amplified by the speech gain: {paused:.1} dBFS"
+        );
+        assert!(
+            (leveler.gain_db() - gain).abs() < 0.01,
+            "the speech estimate should not follow the pause"
+        );
+
+        // The next quiet word is above the floor and gets the full boost on
+        // its first active frames instead of being eaten.
+        let mut again = Tone::new(-46.0);
+        run(&mut leveler, &mut again, 5, true);
+        let mut frame = again.frame();
+        leveler.process(&mut frame, true);
+        let resumed = frame_level_db(&frame);
+        assert!(
+            resumed > -46.0 + 20.0,
+            "the quiet word after the pause lost its gain: {resumed:.1} dBFS"
+        );
     }
 
     #[test]

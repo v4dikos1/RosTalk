@@ -44,7 +44,9 @@ export const DEFAULT_SETTINGS: ClientSettings = {
       highPassFilter: true,
     },
     outputVolume: 100,
-    levelVoices: false,
+    activationThresholdDb: -45,
+    levelVoices: true,
+    backgroundHotkeys: false,
     sounds: {
       enabled: true,
       volume: 70,
@@ -199,6 +201,15 @@ export function clampSettings(settings: ClientSettings): ClientSettings {
           hold_ms: Math.min(2000, Math.max(0, settings.voice.gate.hold_ms ?? 300)),
         }
       : settings.voice.gate;
+  // While voice activation is active its threshold is the source of truth;
+  // otherwise the separate field remembers it for the next switch (P25).
+  const activationThresholdDb =
+    gate.mode === "voiceActivation"
+      ? gate.threshold_db
+      : Math.min(
+          0,
+          Math.max(-80, Math.round(settings.voice.activationThresholdDb ?? -45)),
+        );
   const appearance = normalizeAppearance(settings.appearance, settings.theme);
   return {
     ...settings,
@@ -212,6 +223,7 @@ export function clampSettings(settings: ClientSettings): ClientSettings {
     voice: {
       ...settings.voice,
       gate,
+      activationThresholdDb,
       outputVolume: Math.min(200, Math.max(0, settings.voice.outputVolume)),
       sounds: {
         ...settings.voice.sounds,
@@ -236,12 +248,88 @@ export function normalizeHotkeys(bindings: HotkeyBinding[]): HotkeyBinding[] {
     if (accelerator === null) {
       return { action, accelerator: null };
     }
-    if (used.some((item) => item.toLowerCase() === accelerator.toLowerCase())) {
+    const occupants = acceleratorOccupants(accelerator);
+    if (occupants.some((input) => used.includes(input))) {
       return { action, accelerator: null };
     }
-    used.push(accelerator);
+    used.push(...occupants);
     return { action, accelerator };
   });
+}
+
+/**
+ * Physical inputs one accelerator claims. `X1/X2` is the side-button pair, so
+ * it occupies both `Mouse4` and `Mouse5`; a single side button occupies one.
+ * Keyboard accelerators occupy their own name.
+ *
+ * Push-to-talk's implicit side buttons are deliberately not claimed: an
+ * explicit mute/deafen binding on `Mouse4` wins over the default pair, and the
+ * engine keeps the remaining button for push-to-talk (stage P24).
+ */
+export function acceleratorOccupants(accelerator: string): string[] {
+  const value = accelerator.trim();
+  if (/^x1\/x2$/i.test(value)) {
+    return ["mouse4", "mouse5"];
+  }
+  if (/^(mouse4|x1)$/i.test(value)) {
+    return ["mouse4"];
+  }
+  if (/^(mouse5|x2)$/i.test(value)) {
+    return ["mouse5"];
+  }
+  return [value.toLowerCase()];
+}
+
+/**
+ * True when the accelerator is a modifier combination. A combination needs the
+ * explicit `backgroundHotkeys` opt-in to work while another window is focused.
+ */
+export function needsBackgroundOptIn(accelerator: string | null): boolean {
+  return accelerator?.includes("+") === true;
+}
+
+/**
+ * Assigns one accelerator, last edit wins.
+ *
+ * A clash clears the other action. When the new binding takes one side button
+ * from the push-to-talk pair, push-to-talk keeps the other button instead of
+ * losing the pair entirely; assigning a whole pair takes both buttons back.
+ */
+export function assignHotkey(
+  bindings: HotkeyBinding[],
+  action: HotkeyAction,
+  accelerator: string | null,
+): HotkeyBinding[] {
+  const occupants = accelerator ? acceleratorOccupants(accelerator) : [];
+  const next = bindings.map((binding) => {
+    if (binding.action === action || !binding.accelerator) {
+      return { ...binding };
+    }
+    const other = acceleratorOccupants(binding.accelerator);
+    if (!other.some((input) => occupants.includes(input))) {
+      return { ...binding };
+    }
+    if (
+      binding.action === "pushToTalk" &&
+      /^x1\/x2$/i.test(binding.accelerator) &&
+      (occupants.includes("mouse4") || occupants.includes("mouse5"))
+    ) {
+      const takesX1 = occupants.includes("mouse4");
+      const takesX2 = occupants.includes("mouse5");
+      return {
+        ...binding,
+        accelerator: takesX1 && !takesX2 ? "Mouse5" : takesX2 && !takesX1 ? "Mouse4" : null,
+      };
+    }
+    return { ...binding, accelerator: null };
+  });
+  const target = next.find((binding) => binding.action === action);
+  if (target) {
+    target.accelerator = accelerator;
+  } else {
+    next.push({ action, accelerator });
+  }
+  return normalizeHotkeys(next);
 }
 
 /** Replaces one user's volume and mute without touching the rest. */
@@ -541,4 +629,27 @@ export function matchesAccelerator(
   }
   const eventKey = physicalKey(event);
   return eventKey !== null && eventKey.toLowerCase() === key.toLowerCase();
+}
+
+/**
+ * True when a mouse event matches an accelerator on a side button.
+ *
+ * Browser button 3 is the first side button (X1, the settings name `Mouse4`),
+ * 4 is the second (X2, `Mouse5`). Left, middle and right are not offered by
+ * the picker and are not matched here.
+ */
+export function matchesMouseAccelerator(
+  accelerator: string | null,
+  button: number,
+): boolean {
+  if (!accelerator) {
+    return false;
+  }
+  const value = accelerator.trim().toLowerCase();
+  if (value === "x1/x2") {
+    return button === 3 || button === 4;
+  }
+  const x1 = value === "mouse4" || value === "x1";
+  const x2 = value === "mouse5" || value === "x2";
+  return (x1 && button === 3) || (x2 && button === 4);
 }

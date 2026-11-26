@@ -1,5 +1,5 @@
-import { Download, Pencil, Trash2, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { Copy, Download, Loader2, Pencil, Trash2, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { UserAvatar } from "@/components/common/UserAvatar";
@@ -11,7 +11,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { AttachmentView, ChatProxyView, MessageView } from "@/core/api";
-import { attachmentUrl, formatFileSize } from "@/lib/chat";
+import {
+  attachmentUrl,
+  copyImageErrorKey,
+  copyPictureToClipboard,
+  formatFileSize,
+  MAX_COPY_IMAGE_BYTES,
+  MAX_COPY_IMAGE_PIXELS,
+} from "@/lib/chat";
 import { Markup } from "@/lib/markup";
 import { roleNameStyle } from "@/lib/roles";
 import { formatClock } from "@/lib/time";
@@ -348,6 +355,23 @@ export function MessageItem({
   );
 }
 
+/** What the copy action is doing, or why it stopped. */
+type CopyState =
+  | { status: "idle" }
+  | { status: "copying" }
+  | { status: "copied" }
+  | { status: "error"; key: string };
+
+/**
+ * Only one picture write may be in flight across the whole feed. A newer
+ * click (or a new proxy) aborts the older fetch/conversion and invalidates
+ * its completion, so a late PNG cannot win over the picture the user chose
+ * last. The generation also stops a stale success from leaving an old button
+ * stuck in `copying`.
+ */
+let activeCopyController: AbortController | null = null;
+let activeCopyGeneration = 0;
+
 function ImageAttachment({
   attachment,
   proxy,
@@ -357,7 +381,147 @@ function ImageAttachment({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const [copyState, setCopyState] = useState<CopyState>({ status: "idle" });
+  const abortRef = useRef<AbortController | null>(null);
+  const generationRef = useRef(0);
   const url = attachmentUrl(proxy, attachment.id);
+  const copying = copyState.status === "copying";
+
+  // A session change must cancel this component's copy and invalidate its
+  // completion, including a write that the WebView has already accepted.
+  useEffect(() => {
+    const controller = abortRef.current;
+    if (!controller || activeCopyController !== controller) {
+      return;
+    }
+    activeCopyController = null;
+    activeCopyGeneration += 1;
+    controller.abort();
+    setCopyState((state) =>
+      state.status === "copying" ? { status: "idle" } : state,
+    );
+  }, [proxy.baseUrl, proxy.token]);
+
+  // Unmount follows the same rule: no late completion may touch a view that
+  // is gone or a session that has replaced it.
+  useEffect(
+    () => () => {
+      const controller = abortRef.current;
+      if (!controller || activeCopyController !== controller) {
+        return;
+      }
+      activeCopyController = null;
+      activeCopyGeneration += 1;
+      controller.abort();
+    },
+    [],
+  );
+
+  // The confirmation is transient; an error stays until the next attempt.
+  useEffect(() => {
+    if (copyState.status !== "copied") {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopyState({ status: "idle" }), 4000);
+    return () => window.clearTimeout(timer);
+  }, [copyState.status]);
+
+  async function copyImage() {
+    if (copying) {
+      return;
+    }
+    if (attachment.sizeBytes > MAX_COPY_IMAGE_BYTES) {
+      setCopyState({ status: "error", key: "chat.copyImageTooLarge" });
+      return;
+    }
+    if (
+      attachment.width > 0 &&
+      attachment.height > 0 &&
+      attachment.width * attachment.height > MAX_COPY_IMAGE_PIXELS
+    ) {
+      setCopyState({ status: "error", key: "chat.copyImageTooLarge" });
+      return;
+    }
+    activeCopyController?.abort();
+    const controller = new AbortController();
+    activeCopyController = controller;
+    abortRef.current = controller;
+    const generation = ++activeCopyGeneration;
+    generationRef.current = generation;
+    setCopyState({ status: "copying" });
+    try {
+      await copyPictureToClipboard(proxy, attachment.id, controller.signal);
+      if (generation !== activeCopyGeneration) {
+        // A newer picture or a new session owns the clipboard now.
+        if (generationRef.current === generation) {
+          setCopyState({ status: "idle" });
+        }
+        return;
+      }
+      if (controller.signal.aborted) {
+        setCopyState({ status: "idle" });
+        return;
+      }
+      setCopyState({ status: "copied" });
+    } catch (error) {
+      if (generation !== activeCopyGeneration) {
+        if (generationRef.current === generation) {
+          setCopyState({ status: "idle" });
+        }
+        return;
+      }
+      if (controller.signal.aborted) {
+        setCopyState({ status: "idle" });
+        return;
+      }
+      const key = copyImageErrorKey(error);
+      setCopyState(key ? { status: "error", key } : { status: "idle" });
+    } finally {
+      if (activeCopyController === controller) {
+        activeCopyController = null;
+      }
+    }
+  }
+
+  const status =
+    copyState.status === "copied" ? (
+      <p
+        role="status"
+        className="px-2.5 pb-1.5 text-[11px] text-success"
+        data-testid="attachment-copy-status"
+      >
+        {t("chat.copyImageCopied")}
+      </p>
+    ) : copyState.status === "error" ? (
+      <p
+        role="alert"
+        className="px-2.5 pb-1.5 text-[11px] text-danger"
+        data-testid="attachment-copy-status"
+      >
+        {t(copyState.key)}
+      </p>
+    ) : null;
+
+  const copyButton = (testId: string) => (
+    <Button
+      size="icon-sm"
+      className="size-6"
+      variant="ghost"
+      aria-label={t("chat.copyImage")}
+      title={t("chat.copyImage")}
+      aria-busy={copying}
+      disabled={copying}
+      onClick={() => void copyImage()}
+      data-testid={testId}
+    >
+      {copying ? (
+        <Loader2 className="size-3" aria-hidden />
+      ) : (
+        <Copy className="size-3" aria-hidden />
+      )}
+    </Button>
+  );
+
   return (
     <>
       <figure className="m-0 max-w-[320px] overflow-hidden rounded-lg border border-border bg-raised">
@@ -382,22 +546,29 @@ function ImageAttachment({
         </button>
         <figcaption className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-[12px] text-faint">
           <span className="min-w-0 truncate">{attachment.fileName}</span>
-          <span className="shrink-0 tabular-nums">
+          <span className="flex shrink-0 items-center gap-1.5 tabular-nums">
             {formatFileSize(attachment.sizeBytes)}
+            {copyButton("attachment-image-copy")}
           </span>
         </figcaption>
+        {/* One live region at a time: the dialog takes over while it is open. */}
+        {open ? null : status}
       </figure>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
           className="h-[calc(92vh/var(--fixed-scale))] w-[calc(96vw/var(--fixed-scale))] max-h-none max-w-none bg-background p-2"
           closeLabel={t("common.close")}
         >
-          <DialogTitle className="px-1 pb-1 text-[12px] text-muted">
-            {attachment.fileName}
-          </DialogTitle>
+          <div className="flex items-center gap-2 pr-9">
+            <DialogTitle className="min-w-0 flex-1 truncate px-1 pb-1 text-[12px] text-muted">
+              {attachment.fileName}
+            </DialogTitle>
+            {copyButton("attachment-image-copy-full")}
+          </div>
           <DialogDescription className="sr-only">
             {t("chat.imagePreview")}
           </DialogDescription>
+          {status}
           {/* The dialog fills the viewport; the image is contained, never
               stretched or cropped (stage P3: click opens it full screen). */}
           <img

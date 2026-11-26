@@ -1,4 +1,4 @@
-import { Ban, HeadphoneOff, ImageOff, LogIn, LogOut, MessageCircle, SlidersHorizontal, Volume1, VolumeX } from "lucide-react";
+import { Ban, HeadphoneOff, LogIn, LogOut, MessageCircle, SlidersHorizontal, Volume1, VolumeX } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -22,7 +22,6 @@ import {
 } from "@/lib/admin";
 import { currentVoiceChannelId, joinVoiceChannel } from "@/lib/channels";
 import { asCoreError, coreErrorText } from "@/lib/coreError";
-import { avatarErrorKey, resetUserAvatar } from "@/lib/avatars";
 import { hasExplicit, hasPermission, highestPosition } from "@/lib/permissions";
 import { participantKey, participantPreference } from "@/lib/settings";
 import { formatClock } from "@/lib/time";
@@ -70,7 +69,6 @@ function UserContextMenuBody({ target }: { target: UserMenuTarget }) {
   const [byIp, setByIp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ReturnType<typeof asCoreError> | null>(null);
-  const [avatarError, setAvatarError] = useState<string | null>(null);
   const sliderRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -137,7 +135,6 @@ function UserContextMenuBody({ target }: { target: UserMenuTarget }) {
   const showBan = canAct && (manageServer || serverPerms.includes("ban"));
   const showMute = canAct && (manageServer || serverPerms.includes("muteMembers"));
   const showDeafen = canAct && (manageServer || serverPerms.includes("deafenMembers"));
-  const showResetAvatar = !isSelf && manageServer && user.avatarHash !== "";
 
   const width = 264;
 
@@ -195,26 +192,6 @@ function UserContextMenuBody({ target }: { target: UserMenuTarget }) {
       close();
     } catch (failure) {
       setError(asCoreError(failure));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function runResetAvatar() {
-    if (busy || !user) {
-      return;
-    }
-    setBusy(true);
-    setAvatarError(null);
-    try {
-      const proxy = useChatStore.getState().proxy ?? (await coreApi.chatProxy());
-      if (!proxy) {
-        throw new Error("chat proxy is not ready");
-      }
-      await resetUserAvatar(proxy, user.id);
-      close();
-    } catch (failure) {
-      setAvatarError(avatarErrorKey(failure));
     } finally {
       setBusy(false);
     }
@@ -294,7 +271,7 @@ function UserContextMenuBody({ target }: { target: UserMenuTarget }) {
           </button>
         ) : null}
 
-        {showKick || showBan || showMute || showDeafen || showResetAvatar ? (
+        {showKick || showBan || showMute || showDeafen ? (
           <div className="border-b border-border pb-1.5">
             <p className="mb-1 px-1 text-[11px] font-medium text-faint">
               {t("userMenu.moderation")}
@@ -351,24 +328,7 @@ function UserContextMenuBody({ target }: { target: UserMenuTarget }) {
                   {t("userMenu.ban")}
                 </Button>
               ) : null}
-              {showResetAvatar ? (
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  disabled={busy}
-                  onClick={() => void runResetAvatar()}
-                  data-testid="user-menu-reset-avatar"
-                >
-                  <ImageOff className="size-3" aria-hidden />
-                  {t("userMenu.resetAvatar")}
-                </Button>
-              ) : null}
             </div>
-            {avatarError ? (
-              <p role="alert" className="px-1 text-[10px] text-danger">
-                {t(avatarError)}
-              </p>
-            ) : null}
             {moderation ? (
               <div className="mt-1 space-y-1 px-1">
                 <Input

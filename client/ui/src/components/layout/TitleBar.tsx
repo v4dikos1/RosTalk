@@ -1,20 +1,23 @@
-import { Copy, Flame, Minus, Search, Square, X } from "lucide-react";
+import { Copy, Minus, Search, Square, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { BrandMark } from "@/components/common/BrandMark";
 import { windowChrome } from "@/core";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/store/appStore";
-import { useCoreStore } from "@/store/coreStore";
 
 /**
- * The window's own title bar (stage P7, ADR 0024).
+ * The window's own title bar (stage P7, ADR 0024; identity moved in P26,
+ * ADR 0038).
  *
  * `decorations: false` in `tauri.conf.json` removes the system caption; this
- * component draws the server identity, the command-palette field and the
- * minimize/maximize/close buttons. Dragging is `data-tauri-drag-region`, which
- * asks tao to post `WM_NCLBUTTONDOWN` with `HTCAPTION` to this window only;
- * Tauri's own handler maximizes it on a double click.
+ * component draws the brand mark, the command-palette field and the
+ * minimize/maximize/close buttons. The active server and its online count live
+ * in the sidebar header only, because the game playtest saw both places as a
+ * duplicate. Dragging is `data-tauri-drag-region`, which asks tao to post
+ * `WM_NCLBUTTONDOWN` with `HTCAPTION` to this window only; Tauri's own handler
+ * maximizes it on a double click.
  *
  * Close calls `Window.close()`. That emits `WindowEvent::CloseRequested`, the
  * same event the system cross produces, so ADR 0010 keeps deciding between the
@@ -22,9 +25,7 @@ import { useCoreStore } from "@/store/coreStore";
  */
 export function TitleBar() {
   const { t } = useTranslation();
-  const state = useCoreStore((store) => store.state);
   const openPalette = useAppStore((store) => store.openPalette);
-  const openServerMenu = useAppStore((store) => store.openServerMenu);
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -58,24 +59,6 @@ export function TitleBar() {
     };
   }, []);
 
-  const serverName = state?.server?.name ?? t("app.name");
-  const connected = state?.connection === "connected";
-  const host =
-    state?.servers.find((server) => server.id === state.activeServerId)?.host ??
-    null;
-  const subtitle = connected
-    ? t("main.onlineCount", {
-        count: state?.server?.onlineUsers ?? state?.users.length ?? 0,
-      })
-    : state?.connection === "reconnecting"
-      ? t("connection.reconnecting")
-      : host ?? t("connection.disconnected");
-
-  function openServer(event: React.MouseEvent<HTMLButtonElement>) {
-    const rect = event.currentTarget.getBoundingClientRect();
-    openServerMenu(rect.left, rect.bottom + 4);
-  }
-
   return (
     <header
       data-tauri-drag-region="deep"
@@ -84,28 +67,13 @@ export function TitleBar() {
     >
       <div className="flex min-w-0 flex-1 items-center gap-2 pl-2.5">
         <span
-          className="flex size-6 shrink-0 items-center justify-center text-accent"
+          data-testid="title-bar-brand"
+          title={t("app.name")}
+          className="flex size-6 shrink-0 items-center justify-center"
           aria-hidden
         >
-          <Flame className="size-4" />
+          <BrandMark className="size-4" />
         </span>
-        <button
-          type="button"
-          onClick={openServer}
-          aria-haspopup="menu"
-          data-testid="title-bar-server"
-          title={`${serverName} · ${subtitle}`}
-          className="flex min-w-0 max-w-[240px] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left transition-colors duration-150 hover:bg-hover"
-        >
-          <span className="min-w-0">
-            <span className="block truncate text-[12px] font-medium leading-tight text-foreground">
-              {serverName}
-            </span>
-            <span className="block truncate text-[10px] leading-tight text-faint">
-              {subtitle}
-            </span>
-          </span>
-        </button>
       </div>
 
       <div className="flex flex-1 items-center justify-center px-3">

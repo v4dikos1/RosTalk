@@ -173,6 +173,10 @@ export interface LocalStreamState {
   /** `null` while there is no audio. */
   audioPath: StreamAudioPath | null;
   stats: StreamStats | null;
+  /** The optional Rust WGC publisher owns this stream (stage P16). */
+  native: boolean;
+  /** Native picker/connection status; `null` for the WebView2 path. */
+  nativeStatus: NativeStreamStatus;
 }
 
 export interface RemoteStreamState {
@@ -216,10 +220,73 @@ export interface CoreStreamAudio {
   playing: number[];
 }
 
+/** Presets the optional native capture path implements (stage P16). */
+export type NativePresetName = "720p30" | "1080p30";
+
+export type NativeStreamStatus =
+  | "picking"
+  | "publishing"
+  | "reconnecting"
+  | null;
+
+/** OS/API support for the native path. Never a hardware-encoder probe. */
+export interface NativeStreamSupport {
+  supported: boolean;
+  cursorCaptureAvailable: boolean;
+  borderApiAvailable: boolean;
+  reason: string | null;
+}
+
+/**
+ * One native-publisher event from the Rust core. Token-free; the WebView only
+ * mirrors state and never sees the media credential.
+ */
+export type NativeStreamEvent =
+  | { type: "picking" }
+  | {
+      type: "publishing";
+      preset: string;
+      cursorDisabled: boolean;
+      borderRemoved: boolean;
+    }
+  | { type: "cancelled" }
+  | { type: "reconnecting" }
+  | { type: "ended"; reason: string }
+  | { type: "error"; code: string; message: string }
+  | { type: "stopped" };
+
+/**
+ * One event plus the caller run id it belongs to. The event channel is shared
+ * by every native start, so the id is what keeps a late event from an old run
+ * out of the current one.
+ */
+export interface NativeStreamMessage {
+  runId: string;
+  event: NativeStreamEvent;
+}
+
+/** Optional native publisher bridge; present only in the desktop client. */
+export interface NativeStreamBridge {
+  support(): Promise<NativeStreamSupport>;
+  start(options: {
+    runId: string;
+    channelId: number;
+    preset: NativePresetName;
+    includeAudio: boolean;
+  }): Promise<void>;
+  /** Stops exactly this caller's run; a newer run is untouched. */
+  stop(runId: string): Promise<void>;
+  /** Privileged app-wide shutdown path. */
+  stopAll(): Promise<void>;
+  subscribe(listener: (message: NativeStreamMessage) => void): () => void;
+}
+
 export interface StreamCredentialProvider {
   requestStreamCredentials(channelId: number): Promise<StreamCredentials>;
   /** Present only in the desktop client. */
   audio?: StreamAudioBridge;
+  /** Optional native WGC path (stage P16); absent in the browser/spike. */
+  native?: NativeStreamBridge;
   /**
    * Publishes the streams the user currently watches, so the server can show
    * the audience of every tile (stage P12). The whole set is sent every time;
@@ -290,6 +357,8 @@ export class StreamEngine {
       hasAudio: false,
       audioPath: null,
       stats: null,
+      native: false,
+      nativeStatus: null,
     },
     streams: [],
     watching: [],
@@ -303,6 +372,20 @@ export class StreamEngine {
   private localStream: MediaStream | null = null;
   private localVideo: LocalVideoTrack | null = null;
   private localAudio: LocalAudioTrack | null = null;
+  /** The native bridge owns the publisher; no local MediaStream exists. */
+  private nativeActive = false;
+  private nativeUnsubscribe: (() => void) | null = null;
+  /** Watching other streams pauses while the native publisher owns the identity. */
+  private nativeWasWatching = false;
+  /**
+   * Bumped whenever a native run is started, stopped or finishes. An awaited
+   * step checks it, so a stop or channel change during the picker/credentials
+   * cannot let the old start publish or overwrite the new state.
+   */
+  private nativeEpoch = 0;
+  /** Caller id of the current run; null when no native run is owned. */
+  private nativeRunId: string | null = null;
+  private nativeRunSequence = 0;
   private localVideoElement: HTMLVideoElement | null = null;
   private readonly watching = new Set<number>();
   private readonly remote = new Map<number, RemoteStreamEntry>();
@@ -365,7 +448,7 @@ export class StreamEngine {
     // the streamer's audience must show who actually sees the picture.
     this.reportWatching();
     if (visible) {
-      if (this.active()) {
+      if (this.active() && !this.nativeActive) {
         await this.ensureRoom();
         this.applySubscriptions();
       }
@@ -379,17 +462,23 @@ export class StreamEngine {
   async startLocal(options: {
     preset: StreamPresetName;
     includeAudio: boolean;
+    /** Uses the optional native WGC publisher instead of getDisplayMedia. */
+    native?: boolean;
     /**
      * Forces a codec. The UI never sets it; the P14 measurement harness uses
      * it to compare codecs on machines without VP9/AV1 hardware encoders.
      */
     codec?: StreamVideoCodec;
   }): Promise<void> {
-    if (this.snapshot.local.streaming) {
+    if (this.snapshot.local.streaming || this.nativeActive) {
       return;
     }
     if (this.channelId === 0) {
       this.fail("notInChannel", "Join a voice channel before sharing the screen");
+      return;
+    }
+    if (options.native) {
+      await this.startNative(options.preset, options.includeAudio);
       return;
     }
     const preset = STREAM_PRESETS[options.preset];
@@ -400,6 +489,8 @@ export class StreamEngine {
       hasAudio: false,
       audioPath: null,
       stats: null,
+      native: false,
+      nativeStatus: null,
     });
     // The core captures everything except RosTalk; the WebView system audio
     // (with the friends' voices in it) is only the fallback.
@@ -534,8 +625,273 @@ export class StreamEngine {
     }
   }
 
+  /**
+   * Starts the optional native WGC publisher. The system picker runs in the
+   * Rust core; no capture starts until the user chooses a source. Cancelling
+   * leaves `streaming` false and never falls back to WebView2 by itself.
+   */
+  private async startNative(
+    preset: StreamPresetName,
+    includeAudio: boolean,
+  ): Promise<void> {
+    const bridge = this.provider.native;
+    if (!bridge) {
+      this.fail("nativeUnavailable", "native capture is not available here");
+      return;
+    }
+    if (preset !== "720p30" && preset !== "1080p30") {
+      this.fail(
+        "nativePreset",
+        "native capture supports 720p30 and 1080p30; pick 1080p60 or the native preset in the WebView2 mode",
+      );
+      return;
+    }
+    this.setError(null);
+    const runId = this.nextNativeRunId();
+    const epoch = ++this.nativeEpoch;
+    this.nativeActive = true;
+    this.nativeRunId = runId;
+    this.nativeWasWatching = this.watching.size > 0;
+    // The stream identity is one per user: the Rust publisher and the WebView
+    // viewer cannot both be `<uid>:stream` or LiveKit evicts one. Pause the
+    // viewer room; resume it after the native stream ends or is cancelled.
+    await this.suspendViewingForNative();
+    if (epoch !== this.nativeEpoch || this.nativeRunId !== runId) {
+      // A stop or channel change happened while the viewer room was being
+      // disconnected. The Rust run (if it was already requested) is cancelled
+      // by stopLocal; never set up a picker for a dead run.
+      return;
+    }
+    this.setLocal({
+      preset,
+      streaming: false,
+      hasAudio: false,
+      audioPath: null,
+      stats: null,
+      native: true,
+      nativeStatus: "picking",
+    });
+    this.nativeUnsubscribe?.();
+    this.nativeUnsubscribe = bridge.subscribe((message) => {
+      if (
+        message.runId !== runId ||
+        this.nativeRunId !== runId ||
+        !this.nativeActive
+      ) {
+        return;
+      }
+      this.handleNativeEvent(message.event, preset, includeAudio, runId);
+    });
+    this.emit();
+    try {
+      await bridge.start({
+        runId,
+        channelId: this.channelId,
+        preset,
+        includeAudio,
+      });
+      if (epoch !== this.nativeEpoch || this.nativeRunId !== runId) {
+        // The stop/finish ran while the command was in flight. Stop only this
+        // caller's run: a newer run has a different id and must survive.
+        await bridge.stop(runId).catch(() => {});
+        return;
+      }
+    } catch (error) {
+      if (epoch !== this.nativeEpoch || this.nativeRunId !== runId) {
+        // A late failure from a superseded run must not mutate the new state;
+        // the scoped stop cannot reach the newer run.
+        await bridge.stop(runId).catch(() => {});
+        return;
+      }
+      await bridge.stop(runId).catch(() => {});
+      this.nativeEpoch += 1;
+      this.nativeActive = false;
+      this.nativeRunId = null;
+      this.nativeUnsubscribe?.();
+      this.nativeUnsubscribe = null;
+      this.setLocal({
+        streaming: false,
+        native: false,
+        nativeStatus: null,
+        hasAudio: false,
+        audioPath: null,
+      });
+      this.resumeViewing();
+      this.fail("nativeUnavailable", messageOf(error));
+    }
+  }
+
+  private nextNativeRunId(): string {
+    this.nativeRunSequence += 1;
+    return `${Date.now().toString(36)}-${this.nativeRunSequence.toString(36)}`;
+  }
+
+  private handleNativeEvent(
+    event: NativeStreamEvent,
+    preset: NativePresetName,
+    includeAudio: boolean,
+    runId: string,
+  ): void {
+    if (this.nativeRunId !== runId || !this.nativeActive) {
+      return;
+    }
+    switch (event.type) {
+      case "picking":
+        this.setLocal({ nativeStatus: "picking" });
+        this.emit();
+        return;
+      case "publishing":
+        if (!event.cursorDisabled) {
+          // Defence in depth: the Rust side refuses to publish such a track,
+          // but never show a cursor-visible native stream if an old build
+          // reports one.
+          this.finishNative();
+          void this.provider.native?.stop(runId).catch(() => {});
+          this.setError({
+            code: "nativeCursor",
+            message:
+              "The system cursor could not be hidden; the native stream was stopped.",
+          });
+          return;
+        }
+        this.setLocal({
+          streaming: true,
+          native: true,
+          nativeStatus: "publishing",
+          preset,
+          hasAudio: includeAudio && this.provider.audio !== undefined,
+          audioPath: includeAudio ? "core" : null,
+          stats: null,
+        });
+        // On Windows 10 2004–21H2 the borderless API is absent; Windows keeps
+        // its capture border. Explain it; never claim it was hidden.
+        this.setError(
+          event.borderRemoved
+            ? null
+            : {
+                code: "captureBorder",
+                message:
+                  "Windows keeps the capture border on this build; the system cursor is still hidden.",
+              },
+        );
+        this.emit();
+        return;
+      case "reconnecting":
+        this.setLocal({ nativeStatus: "reconnecting" });
+        this.emit();
+        return;
+      case "cancelled":
+        this.finishNative();
+        this.setError({
+          code: "captureCancelled",
+          message: "The source picker was cancelled; nothing was captured.",
+        });
+        return;
+      case "ended":
+        this.finishNative();
+        this.setError({
+          code:
+            event.reason === "sourceClosed"
+              ? "nativeSourceClosed"
+              : "nativeEnded",
+          message:
+            event.reason === "sourceClosed"
+              ? "The selected window was closed; the stream ended."
+              : "The native stream ended.",
+        });
+        return;
+      case "error":
+        this.finishNative();
+        this.setError({
+          code: event.code || "nativeError",
+          message: event.message,
+        });
+        return;
+      case "stopped":
+        this.finishNative();
+        return;
+    }
+  }
+
+  /** Clears native state after a terminal event or an explicit stop. */
+  private finishNative(): void {
+    this.nativeEpoch += 1;
+    this.nativeActive = false;
+    this.nativeRunId = null;
+    this.nativeUnsubscribe?.();
+    this.nativeUnsubscribe = null;
+    this.setLocal({
+      streaming: false,
+      native: false,
+      nativeStatus: null,
+      hasAudio: false,
+      audioPath: null,
+      stats: null,
+    });
+    this.emit();
+    this.resumeViewing();
+  }
+
+  /** Drops the viewer room so the native publisher can own `<uid>:stream`. */
+  private async suspendViewingForNative(): Promise<void> {
+    const room = this.room;
+    if (!room) {
+      return;
+    }
+    this.room = null;
+    this.roomFuture = null;
+    this.clearRemote();
+    this.stopStats();
+    this.setSnapshot({ room: "idle" });
+    await room.disconnect().catch(() => {});
+  }
+
+  /** Reconnects the viewer room after the native publisher releases the identity. */
+  private resumeViewing(): void {
+    if (!this.nativeWasWatching) {
+      return;
+    }
+    this.nativeWasWatching = false;
+    if (!this.snapshot.visible || this.watching.size === 0) {
+      return;
+    }
+    void this.ensureRoom()
+      .then(() => this.applySubscriptions())
+      .catch(() => {});
+  }
+
   /** Stops own screen share, keeping the room if a player is still watched. */
   async stopLocal(): Promise<void> {
+    if (this.nativeActive) {
+      const runId = this.nativeRunId;
+      const epoch = ++this.nativeEpoch;
+      this.nativeActive = false;
+      this.nativeRunId = null;
+      this.nativeUnsubscribe?.();
+      this.nativeUnsubscribe = null;
+      this.setLocal({
+        streaming: false,
+        hasAudio: false,
+        audioPath: null,
+        stats: null,
+        native: false,
+        nativeStatus: null,
+      });
+      this.emit();
+      // Rust owns the native P15 audio lifecycle, so the stop is scoped to the
+      // run that owned it. A late completion from this stop cannot clear a
+      // newer run (different id) or perform an unscoped audio.stop.
+      if (runId) {
+        await this.provider.native?.stop(runId).catch(() => {});
+      }
+      if (epoch !== this.nativeEpoch) {
+        return;
+      }
+      this.resumeViewing();
+      await this.disconnectIfIdle();
+      this.emit();
+      return;
+    }
     const room = this.room;
     if (this.snapshot.local.audioPath === "core") {
       await this.provider.audio?.stop().catch(() => {});
@@ -566,6 +922,8 @@ export class StreamEngine {
       hasAudio: false,
       audioPath: null,
       stats: null,
+      native: false,
+      nativeStatus: null,
     });
     await this.disconnectIfIdle();
     this.emit();
@@ -577,6 +935,12 @@ export class StreamEngine {
     this.setSnapshot({ watching: [...this.watching] });
     this.reportWatching();
     if (!this.snapshot.visible) {
+      return;
+    }
+    if (this.nativeActive) {
+      // The tile will subscribe when the native publisher releases the
+      // participant identity.
+      this.nativeWasWatching = true;
       return;
     }
     try {
@@ -691,7 +1055,19 @@ export class StreamEngine {
   /** Releases the room and all tracks; called on disconnect. */
   async shutdown(): Promise<void> {
     this.generation += 1;
-    if (this.snapshot.local.audioPath === "core") {
+    const nativeWasActive = this.nativeActive;
+    if (this.nativeActive) {
+      this.nativeEpoch += 1;
+      this.nativeActive = false;
+      this.nativeRunId = null;
+      this.nativeUnsubscribe?.();
+      this.nativeUnsubscribe = null;
+    }
+    // Privileged app-wide path: it also catches a start whose UI run id was
+    // already cleared by an earlier stop while its credential/picker await was
+    // still in flight.
+    await this.provider.native?.stopAll().catch(() => {});
+    if (!nativeWasActive && this.snapshot.local.audioPath === "core") {
       await this.provider.audio?.stop().catch(() => {});
     }
     this.watching.clear();
@@ -721,6 +1097,8 @@ export class StreamEngine {
         hasAudio: false,
         audioPath: null,
         stats: null,
+        native: false,
+        nativeStatus: null,
       },
     });
   }
@@ -788,6 +1166,9 @@ export class StreamEngine {
   }
 
   private async ensureRoom(): Promise<Room> {
+    if (this.nativeActive) {
+      throw new Error("native capture owns the stream participant");
+    }
     const current = this.room;
     if (current) {
       if (current.state === ConnectionState.Connected) {

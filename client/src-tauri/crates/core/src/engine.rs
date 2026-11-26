@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex, RwLock};
 use rostalk_platform::Identity;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 
 use crate::error::{CoreError, CoreErrorCode, ServerErrorCode};
 use crate::identity::IdentityProvider;
@@ -136,6 +136,35 @@ pub struct VoiceStatePatch {
     pub away: Option<bool>,
 }
 
+/// Which own voice flag a global hotkey or a control-bar button toggles.
+///
+/// The toggle is computed by the core from the persisted [`VoicePreferences`],
+/// so a manual button press and a global hotkey share the same current value
+/// instead of racing on a stale UI snapshot or a cached hotkey target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum VoiceToggle {
+    Mute,
+    Deafen,
+}
+
+/// Next target for a toggle, computed from the current persisted preferences.
+fn toggle_target(
+    field: VoiceToggle,
+    preferences: VoicePreferences,
+) -> (Option<bool>, Option<bool>, bool) {
+    match field {
+        VoiceToggle::Mute => {
+            let next = !preferences.self_muted;
+            (Some(next), None, next)
+        }
+        VoiceToggle::Deafen => {
+            let next = !preferences.self_deafened;
+            (None, Some(next), next)
+        }
+    }
+}
+
 /// Public identity data safe to show in the UI.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -199,6 +228,27 @@ pub struct StreamCredentialsView {
     pub presets: Vec<String>,
 }
 
+/// Credentials for the optional native screen publisher (stage P16).
+///
+/// Deliberately has no `Debug`, `Serialize` or `specta::Type`: the token and the
+/// gateway URL stay inside the core and the voice engine. The UI only receives
+/// support/state events.
+#[derive(Clone)]
+pub struct NativeStreamConfig {
+    /// Gateway URL from the credentials, `wss://<host>/rtc`.
+    pub gateway: String,
+    /// SHA-256 of the server's TLS leaf certificate, lowercase hex.
+    pub fingerprint: String,
+    /// LiveKit token for `<user id>:stream`, with the stream publish rights.
+    pub token: String,
+    /// Media room, for diagnostics only.
+    pub room: String,
+    /// Channel the token is bound to.
+    pub channel_id: u64,
+    /// Remaining token lifetime in seconds.
+    pub expires_in_seconds: u32,
+}
+
 /// One connection worker command.
 enum Command {
     Connect {
@@ -239,6 +289,10 @@ struct Inner {
     state: RwLock<StateStore>,
     bookmarks: Mutex<BookmarkStore>,
     settings: Mutex<SettingsStore>,
+    /// Serializes a toggle computed from [`VoicePreferences`]. A manual
+    /// control-bar press and a global hotkey both take this lock, so neither
+    /// applies a target computed before the other one finished.
+    voice_toggle: AsyncMutex<()>,
     identity: Arc<dyn IdentityProvider>,
     events: Arc<dyn Fn(CoreEvent) + Send + Sync>,
     worker: Mutex<Option<mpsc::UnboundedSender<Command>>>,
@@ -260,6 +314,13 @@ struct Inner {
     /// Loopback WebSocket proxy for LiveKit signalling, started after Welcome.
     /// It owns the current screen-share media token; the UI never sees it.
     stream_proxy: Mutex<Option<StreamProxy>>,
+    /// Gateway and pinned fingerprint for the native screen publisher. Set when
+    /// the stream proxy starts; never leaves the core.
+    stream_target: Mutex<Option<(String, String)>>,
+    /// Native-publisher token, kept separately from the WebView proxy so the
+    /// optional path can publish without a second control request. The token
+    /// expires; a fresh copy is requested by `native_stream_config`.
+    stream_secret: Mutex<Option<(NativeStreamConfig, Instant)>>,
     /// Client-side handshake deadline. `protocol::HANDSHAKE_TIMEOUT` in
     /// production; unit tests shorten it to exercise the reconnect race
     /// without waiting fifteen seconds.
@@ -279,6 +340,8 @@ impl Inner {
         self.clear_stream();
         *self.proxy.lock() = None;
         *self.stream_proxy.lock() = None;
+        *self.stream_target.lock() = None;
+        *self.stream_secret.lock() = None;
         self.last_channel.store(0, Ordering::SeqCst);
         let delta = {
             let mut state = self.state.write();
@@ -313,6 +376,7 @@ impl Inner {
         if let Some(proxy) = self.stream_proxy.lock().as_ref() {
             proxy.clear_credential();
         }
+        *self.stream_secret.lock() = None;
     }
 
     /// Keeps the media session for [`MEDIA_HOLD_AFTER_DROP`] after the control
@@ -399,6 +463,7 @@ impl CoreHandle {
                 state: RwLock::new(StateStore::new(servers, active, profile_view)),
                 bookmarks: Mutex::new(bookmarks),
                 settings: Mutex::new(settings),
+                voice_toggle: AsyncMutex::new(()),
                 identity,
                 events,
                 worker: Mutex::new(None),
@@ -410,6 +475,8 @@ impl CoreHandle {
                 last_channel: AtomicU64::new(0),
                 proxy: Mutex::new(None),
                 stream_proxy: Mutex::new(None),
+                stream_target: Mutex::new(None),
+                stream_secret: Mutex::new(None),
                 handshake_timeout_ms: AtomicU64::new(
                     u64::try_from(protocol::HANDSHAKE_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
                 ),
@@ -734,6 +801,28 @@ impl CoreHandle {
         Ok(())
     }
 
+    /// Toggles the own microphone or playback from the latest persisted
+    /// preferences.
+    ///
+    /// Both a manual control-bar press and a global hotkey call this method.
+    /// The lock makes the read and the successful `set_voice_state` atomic, so
+    /// two quick presses flip twice and a manual change is never overwritten by
+    /// a target computed from a stale presence snapshot. The preferences are
+    /// written by `set_voice_state` after the server accepts the change, so a
+    /// missing server echo does not make the next toggle stale.
+    pub async fn toggle_voice_state(&self, field: VoiceToggle) -> Result<bool, CoreError> {
+        let _guard = self.inner.voice_toggle.lock().await;
+        let preferences = self.voice_preferences();
+        let (self_muted, self_deafened, next) = toggle_target(field, preferences);
+        self.set_voice_state(VoiceStatePatch {
+            self_muted,
+            self_deafened,
+            away: None,
+        })
+        .await?;
+        Ok(next)
+    }
+
     /// Replaces the set of screen shares the caller watches (stage P12).
     ///
     /// The whole set is sent every time; the server keeps only live shares of
@@ -826,7 +915,19 @@ impl CoreHandle {
     /// The nickname is also mirrored into the state snapshot, so the profile
     /// screen and the next login see the same value without another round trip.
     pub fn update_settings(&self, settings: ClientSettings) -> Result<ClientSettings, CoreError> {
-        let saved = self.inner.settings.lock().replace(settings)?;
+        let mut settings = settings;
+        // Mute and deafen are live voice state, persisted by `set_voice_state`.
+        // The UI sends the whole settings object, and its mirror can lag
+        // behind a control-bar or hotkey toggle; a settings write must not
+        // resurrect that stale value and silently mute (or unmute) the
+        // microphone (stage P25).
+        let saved = {
+            let mut store = self.inner.settings.lock();
+            let stored = store.voice_preferences();
+            settings.self_muted = stored.self_muted;
+            settings.self_deafened = stored.self_deafened;
+            store.replace(settings)?
+        };
         let profile = {
             let mut state = self.inner.state.write();
             state.set_profile(saved.profile())
@@ -946,6 +1047,31 @@ impl CoreHandle {
                 "the server did not answer the stream credential request in time",
             )
             .retryable(true)),
+        }
+    }
+
+    /// Fresh credentials for the optional native screen publisher (stage P16).
+    ///
+    /// This makes one ordinary `RequestMediaCredentials(Stream)` request, so
+    /// the token is bound to the caller's current channel and rights, and
+    /// returns the gateway URL, pinned fingerprint and token to the in-process
+    /// native publisher only. The UI never receives this value.
+    pub async fn native_stream_config(
+        &self,
+        channel_id: u64,
+    ) -> Result<NativeStreamConfig, CoreError> {
+        self.request_stream_credentials(channel_id).await?;
+        let secret = self.inner.stream_secret.lock();
+        match secret.as_ref() {
+            Some((config, expires_at))
+                if config.channel_id == channel_id && *expires_at > Instant::now() =>
+            {
+                Ok(config.clone())
+            }
+            _ => Err(CoreError::new(
+                CoreErrorCode::InvalidRequest,
+                "the stream credentials are not available or have expired",
+            )),
         }
     }
 
@@ -1426,9 +1552,14 @@ impl Worker {
         match StreamProxy::start(link.clone(), fingerprint).await {
             Ok(proxy) => {
                 *self.inner.stream_proxy.lock() = Some(proxy);
+                *self.inner.stream_target.lock() = Some((
+                    format!("wss://{}/rtc", link.authority()),
+                    hex::encode(fingerprint),
+                ));
             }
             Err(error) => {
                 *self.inner.stream_proxy.lock() = None;
+                *self.inner.stream_target.lock() = None;
                 log::warn!("could not start the stream proxy: {}", error.message);
             }
         }
@@ -2025,6 +2156,9 @@ impl Worker {
             ));
         }
         let seconds = credentials.expires_in_seconds.max(1);
+        let (gateway, fingerprint) = self.inner.stream_target.lock().clone().ok_or_else(|| {
+            CoreError::internal("the stream gateway is not known for this session")
+        })?;
         let (url, presets) = {
             let proxy = self.inner.stream_proxy.lock();
             let proxy = proxy.as_ref().ok_or_else(|| {
@@ -2036,6 +2170,17 @@ impl Worker {
             );
             (proxy.url(), credentials.stream_presets.clone())
         };
+        *self.inner.stream_secret.lock() = Some((
+            NativeStreamConfig {
+                gateway,
+                fingerprint,
+                token: credentials.token.clone(),
+                room: credentials.room.clone(),
+                channel_id: credentials.channel_id,
+                expires_in_seconds: seconds,
+            },
+            Instant::now() + Duration::from_secs(u64::from(seconds)),
+        ));
         Ok(StreamCredentialsView {
             url,
             room: credentials.room.clone(),
@@ -2244,6 +2389,33 @@ mod tests {
     }
 
     #[test]
+    fn a_toggle_uses_the_latest_persisted_preferences() {
+        let mut preferences = VoicePreferences::default();
+        let (self_muted, self_deafened, first) = toggle_target(VoiceToggle::Mute, preferences);
+        assert_eq!(self_muted, Some(true));
+        assert_eq!(self_deafened, None);
+        assert!(first);
+
+        // The server accepted it and `set_voice_state` persisted the target;
+        // a second quick press flips the value the worker actually applied.
+        preferences.self_muted = first;
+        let (_, _, second) = toggle_target(VoiceToggle::Mute, preferences);
+        assert!(!second, "two quick presses must flip twice");
+
+        // A manual ControlBar press in the same session moved the same
+        // preference; the next hotkey must toggle from that value, not from a
+        // cached hotkey target.
+        preferences.self_muted = true;
+        let (_, _, after_manual) = toggle_target(VoiceToggle::Mute, preferences);
+        assert!(!after_manual);
+
+        // Deafen is independent.
+        let (_, self_deafened, next) = toggle_target(VoiceToggle::Deafen, preferences);
+        assert_eq!(self_deafened, Some(true));
+        assert!(next);
+    }
+
+    #[test]
     fn a_short_control_drop_keeps_the_media_session_for_the_grace() {
         let (core, _dir) = test_core();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2295,6 +2467,148 @@ mod tests {
         *core.inner.media_hold_until.lock() = Some(Instant::now() + Duration::from_secs(60));
         core.inner.clear_media();
         assert!(core.inner.media_hold_until.lock().is_none());
+    }
+
+    /// Stage P25: the settings mirror can carry an old mute flag while the
+    /// control bar, a hotkey or a server event already changed the live state.
+    /// Saving an unrelated setting must not rewrite that flag.
+    #[test]
+    fn a_settings_save_does_not_rewrite_the_runtime_mute_flags() {
+        let (core, _dir) = test_core();
+        let live = VoicePreferences {
+            self_muted: false,
+            self_deafened: true,
+        };
+        core.inner
+            .settings
+            .lock()
+            .set_voice_preferences(live)
+            .expect("store live flags");
+
+        let mut stale = core.settings();
+        stale.voice.output_volume = 140;
+        stale.self_muted = true;
+        stale.self_deafened = false;
+        let saved = core.update_settings(stale).expect("save settings");
+
+        assert_eq!(saved.voice.output_volume, 140, "the edit was not saved");
+        assert_eq!(
+            saved.voice_preferences(),
+            live,
+            "a settings save changed the live mute/deafen flags"
+        );
+
+        // The explicit path still works: the control bar and hotkeys persist
+        // through it, not through a whole settings save.
+        core.inner
+            .settings
+            .lock()
+            .set_voice_preferences(VoicePreferences {
+                self_muted: true,
+                self_deafened: false,
+            })
+            .expect("toggle flags");
+        assert!(core.settings().self_muted);
+        assert!(!core.settings().self_deafened);
+    }
+
+    /// Stage P25, rework: a mode change and a mute toggle can be saved almost
+    /// at the same time. The gate must be written, the live flags must stay as
+    /// the control bar or a hotkey left them, and the stale mirror in the
+    /// settings object must not reach the profile.
+    #[test]
+    fn a_gate_change_and_a_save_with_a_stale_mute_keep_the_live_flags() {
+        let (core, _dir) = test_core();
+        let live = VoicePreferences {
+            self_muted: false,
+            self_deafened: true,
+        };
+        core.inner
+            .settings
+            .lock()
+            .set_voice_preferences(live)
+            .expect("store live flags");
+
+        let mut stale = core.settings();
+        stale.voice.gate = crate::settings::GateSettings::PushToTalk;
+        stale.self_muted = true;
+        stale.self_deafened = false;
+        let saved = core.update_settings(stale).expect("save settings");
+
+        assert_eq!(
+            saved.voice.gate,
+            crate::settings::GateSettings::PushToTalk,
+            "the mode change was not saved"
+        );
+        assert_eq!(
+            saved.voice_preferences(),
+            live,
+            "saving the mode wrote the stale mute/deafen mirror"
+        );
+        // The profile on disk carries the live flags as well, so the next start
+        // and the next reconnect restore them.
+        assert_eq!(core.settings().voice_preferences(), live);
+    }
+
+    /// Stage P25, owner clarification: the app's headphone button (deafen) is
+    /// the first suspect. Repeated mode switches and settings saves with a
+    /// stale mirror must keep the live deafen flag, and must not touch mute.
+    #[test]
+    fn repeated_mode_changes_and_saves_keep_the_live_deafen() {
+        let (core, _dir) = test_core();
+        let live = VoicePreferences {
+            self_muted: false,
+            self_deafened: true,
+        };
+        core.inner
+            .settings
+            .lock()
+            .set_voice_preferences(live)
+            .expect("store live flags");
+
+        let modes = [
+            crate::settings::GateSettings::VoiceActivation {
+                threshold_db: -61.0,
+                hold_ms: 300,
+            },
+            crate::settings::GateSettings::PushToTalk,
+            crate::settings::GateSettings::Continuous,
+            crate::settings::GateSettings::VoiceActivation {
+                threshold_db: -52.0,
+                hold_ms: 300,
+            },
+        ];
+        for (index, gate) in modes.into_iter().enumerate() {
+            // The UI mirror is always wrong here: both flags are the opposite
+            // of the live state, as if the button was pressed after the page
+            // copied the settings object.
+            let mut stale = core.settings();
+            stale.voice.gate = gate;
+            stale.self_muted = true;
+            stale.self_deafened = false;
+            let saved = core.update_settings(stale).expect("save settings");
+
+            assert_eq!(saved.voice.gate, gate, "mode {index} was not saved");
+            assert_eq!(
+                saved.voice_preferences(),
+                live,
+                "mode {index} rewrote the live deafen/mute flags"
+            );
+            assert_eq!(core.settings().voice_preferences(), live);
+        }
+
+        // The explicit toggle path still works and is independent: undeafen
+        // does not unmute the microphone and mute does not undeafen.
+        core.inner
+            .settings
+            .lock()
+            .set_voice_preferences(VoicePreferences {
+                self_muted: false,
+                self_deafened: false,
+            })
+            .expect("undeafen");
+        assert!(!core.settings().self_deafened);
+        assert!(!core.settings().self_muted);
     }
 
     fn target_direct(host: &str, fingerprint: Option<&str>) -> ConnectRequest {

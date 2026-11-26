@@ -19,6 +19,7 @@ use rostalk_core::{
     AudioProcessing, ChatProxyView, ChatTarget, ClientSettings, ConnectRequest, CoreError,
     CoreErrorCode, CoreEvent, CoreHandle, CoreState, CueSettings, GateSettings, HotkeyAction,
     IdentityInfo, LocalePreference, ParticipantSettings, ServerProbeView, VoiceStatePatch,
+    VoiceToggle,
 };
 use rostalk_voice::loopback::StreamAudioSupport;
 use rostalk_voice::stream_audio::{stream_gain, StreamAudioState};
@@ -256,6 +257,7 @@ pub async fn set_voice_state(
     voice: State<'_, VoiceHandle>,
     patch: VoiceStatePatch,
 ) -> Result<(), CoreError> {
+    let _guard = crate::voice_toggle_lock().lock().await;
     core.set_voice_state(patch.clone()).await?;
     if let Some(muted) = patch.self_muted {
         voice
@@ -267,6 +269,29 @@ pub async fn set_voice_state(
             .set_deafened(deafened)
             .map_err(|error| CoreError::internal(error.user_message()))?;
     }
+    Ok(())
+}
+
+/// Toggles own microphone or playback through the shared serialized path.
+///
+/// The control-bar button and the global hotkey worker call the same core
+/// method, which reads the latest persisted `VoicePreferences`; the lock also
+/// covers the engine update so a manual press and a hotkey cannot apply
+/// conflicting values.
+#[tauri::command]
+#[specta::specta]
+pub async fn toggle_voice_state(
+    core: State<'_, Arc<CoreHandle>>,
+    voice: State<'_, VoiceHandle>,
+    field: VoiceToggle,
+) -> Result<(), CoreError> {
+    let _guard = crate::voice_toggle_lock().lock().await;
+    let next = core.toggle_voice_state(field).await?;
+    let result = match field {
+        VoiceToggle::Mute => voice.set_self_muted(next),
+        VoiceToggle::Deafen => voice.set_deafened(next),
+    };
+    result.map_err(|error| CoreError::internal(error.user_message()))?;
     Ok(())
 }
 
@@ -343,8 +368,14 @@ pub fn set_voice_output_volume(
 pub fn set_voice_gate(
     core: State<'_, Arc<CoreHandle>>,
     voice: State<'_, VoiceHandle>,
-    mode: GateMode,
+    mut mode: GateMode,
 ) -> Result<(), CoreError> {
+    let current = core.settings();
+    if let GateMode::VoiceActivation { threshold_db, .. } = &mut mode {
+        // The control bar has no settings copy; the core remembers the last
+        // calibrated threshold while another mode is active (stage P25).
+        *threshold_db = current.voice.activation_threshold_db;
+    }
     voice
         .set_gate(mode)
         .map_err(|error| CoreError::internal(error.user_message()))?;
@@ -538,8 +569,9 @@ pub fn set_voice_mic_test(voice: State<'_, VoiceHandle>, enabled: bool) -> Resul
 
 /// Changes the global push-to-talk binding and persists it.
 ///
-/// Only single keys and the X1/X2 default are supported by Raw Input; the
-/// settings window records the value. `null` restores the mouse-button pair.
+/// Only single keys, single mouse buttons and the X1/X2 pair are supported by
+/// Raw Input; the settings window records the value. `null` restores the
+/// mouse-button pair.
 #[tauri::command]
 #[specta::specta]
 pub fn set_voice_ptt_binding(
@@ -557,7 +589,7 @@ pub fn set_voice_ptt_binding(
         binding.accelerator = accelerator;
     }
     let saved = core.update_settings(current)?;
-    crate::sync_push_to_talk(&voice, &saved);
+    crate::sync_global_input(core.inner(), &voice, &saved);
     Ok(())
 }
 
@@ -718,7 +750,7 @@ pub fn update_settings(
     if saved.autostart != previous.autostart {
         crate::apply_autostart(&app, saved.autostart);
     }
-    crate::apply_voice_settings(&voice, &saved);
+    crate::apply_voice_settings(core.inner(), &voice, &saved);
     Ok(saved)
 }
 
@@ -798,6 +830,9 @@ pub fn quit_app(app: tauri::AppHandle) {
 /// Persists the gate selected with the quick control.
 fn persist_gate(core: &CoreHandle, mode: GateMode) -> Result<(), CoreError> {
     let mut current = core.settings();
+    if let GateMode::VoiceActivation { threshold_db, .. } = mode {
+        current.voice.activation_threshold_db = threshold_db;
+    }
     current.voice.gate = core_gate(mode);
     core.update_settings(current)?;
     Ok(())

@@ -245,6 +245,12 @@ pub struct SharedAudio {
 }
 
 impl SharedAudio {
+    /// Silent state for engine unit tests: no device, no threads.
+    #[cfg(test)]
+    pub(crate) fn for_test(config: &AudioConfig) -> Self {
+        Self::new(config)
+    }
+
     fn new(config: &AudioConfig) -> Self {
         let shared = Self {
             own_level_bits: AtomicU32::new(f32::to_bits(SILENCE_DB)),
@@ -539,6 +545,13 @@ impl SharedAudio {
 pub enum MixerUpdate {
     /// A remote track was subscribed.
     Add {
+        identity: String,
+        consumer: HeapCons<i16>,
+        level: Arc<TrackLevel>,
+    },
+    /// A remote screen-share audio track was subscribed: it is mixed with the
+    /// voices but never leveled (stage P25).
+    AddStream {
         identity: String,
         consumer: HeapCons<i16>,
         level: Arc<TrackLevel>,
@@ -1764,6 +1777,11 @@ fn drain_updates(ctx: &mut PlaybackContext) {
                 consumer,
                 level,
             }) => ctx.mixer.insert_track(&identity, consumer, level),
+            Ok(MixerUpdate::AddStream {
+                identity,
+                consumer,
+                level,
+            }) => ctx.mixer.insert_stream_track(&identity, consumer, level),
             Ok(MixerUpdate::Remove(identity)) => ctx.mixer.remove_track(&identity),
             Ok(MixerUpdate::Volume { identity, volume }) => {
                 ctx.mixer.set_volume(&identity, volume);
@@ -2067,6 +2085,38 @@ mod tests {
             hold_ms: 250,
         });
         assert!(shared.feeds_publisher());
+    }
+
+    /// Stage P25 owner clarification: the app's headphone button only turns
+    /// incoming sound off. It must not mute the microphone, close the gate or
+    /// stop the remote publication; otherwise "sound returned" would also mean
+    /// "the partner could hear me again" on the same button.
+    #[test]
+    fn deafen_does_not_close_the_gate_or_stop_publication() {
+        let shared = SharedAudio::new(&AudioConfig::default());
+        shared.set_gate_mode(GateMode::PushToTalk);
+        shared.set_push_to_talk(true);
+        assert!(shared.feeds_publisher());
+
+        shared.set_deafened(true);
+        assert!(shared.deafened());
+        assert!(!shared.self_muted(), "deafen must not mute the microphone");
+        assert!(
+            shared.feeds_publisher(),
+            "deafen must not stop the publisher"
+        );
+        assert_eq!(shared.gate_mode(), GateMode::PushToTalk);
+
+        // Voice activation is unaffected in the same way.
+        shared.set_gate_mode(GateMode::VoiceActivation {
+            threshold_db: -45.0,
+            hold_ms: 300,
+        });
+        assert!(shared.feeds_publisher());
+        shared.set_deafened(false);
+        assert!(!shared.deafened());
+        assert!(shared.feeds_publisher());
+        assert!(!shared.self_muted());
     }
 
     #[test]

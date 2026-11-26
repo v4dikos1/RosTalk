@@ -1,10 +1,11 @@
 import { Hash, Volume2, X } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { UserStateIcons } from "@/components/channels/UserStateIcons";
 import { PresenceDot } from "@/components/common/PresenceDot";
 import { UserAvatar } from "@/components/common/UserAvatar";
+import { AvatarViewerDialog } from "@/components/profile/AvatarViewerDialog";
 import { StreamViewerCount } from "@/components/streams/StreamViewers";
 import type { ChannelView, RoleView, UserView } from "@/core/api";
 import { roleName, roleNameStyle } from "@/lib/roles";
@@ -26,7 +27,10 @@ export interface MembersPaneProps {
   /** Always visible on a narrow window: the pane is an overlay there. */
   overlay?: boolean;
   onClose: () => void;
+  /** Opens the user context menu at a position (right click, Shift+F10 or Menu). */
   onUserMenu: (user: UserView, position: { x: number; y: number }) => void;
+  /** Opens the profile section when your own row is activated (stage P27). */
+  onOpenProfile: () => void;
 }
 
 /**
@@ -34,7 +38,12 @@ export interface MembersPaneProps {
  *
  * Above: the people in the open voice channel with speaking, microphone,
  * sound, stream and role state. Below: everyone else online on the server,
- * grouped by channel. A click opens the same user menu as the tree rows.
+ * grouped by channel.
+ *
+ * Stage P27: the primary click (or Enter) on another participant opens a
+ * read-only avatar viewer, while the context action and Shift+F10/ContextMenu
+ * keep the user menu. Your own row opens the profile instead, which is where
+ * the avatar editor lives now.
  */
 export function MembersPane({
   channel,
@@ -48,8 +57,28 @@ export function MembersPane({
   overlay = false,
   onClose,
   onUserMenu,
+  onOpenProfile,
 }: MembersPaneProps) {
   const { t } = useTranslation();
+  // The open viewer remembers its server and the participant's join: the
+  // target is resolved from the current users every render, so a new hash
+  // arrives in place. A server switch or a departed participant makes the
+  // viewer close; clearing the request during render means a later return of
+  // the same id or server needs a new click. The row that opened it lives in
+  // a ref and receives focus only while it is still in the document.
+  const [avatarView, setAvatarView] = useState<{
+    userId: number;
+    serverId: string | null;
+    connectedAt: number;
+    attempt: number;
+    open: boolean;
+  } | null>(null);
+  // Strictly increasing across openings, so a failure from an earlier open
+  // can never match a later one even after the request state was cleared.
+  const avatarAttempt = useRef(0);
+  // Focus target for a close that was not requested by the page (a departed
+  // participant or a server switch). It is written only in event handlers.
+  const avatarRestore = useRef<HTMLElement | null>(null);
 
   const byName = useMemo(
     () => (a: UserView, b: UserView) =>
@@ -115,13 +144,54 @@ export function MembersPane({
   const onlineCount =
     channel.kind === "voice" ? inChannel.length : users.length;
 
-  function openMenu(user: UserView, event: React.MouseEvent<HTMLElement>) {
-    const rect = event.currentTarget.getBoundingClientRect();
-    onUserMenu(user, {
-      x: event.clientX || rect.left,
-      y: event.clientY || rect.bottom,
+  function openMenu(
+    user: UserView,
+    position: { x: number; y: number },
+  ) {
+    onUserMenu(user, position);
+  }
+
+  function openPrimary(user: UserView, row: HTMLElement) {
+    if (user.id === selfUserId) {
+      onOpenProfile();
+      return;
+    }
+    avatarAttempt.current += 1;
+    avatarRestore.current = row;
+    setAvatarView({
+      userId: user.id,
+      serverId,
+      connectedAt: user.connectedAtUnixMs,
+      attempt: avatarAttempt.current,
+      open: true,
     });
   }
+
+  const avatarCandidate =
+    avatarView === null
+      ? null
+      : (users.find((user) => user.id === avatarView.userId) ?? null);
+  // A departed participant or a server switch finishes the request for good:
+  // clearing it during render (the supported "adjust state on prop change"
+  // path) means a later return of the same id or server needs a new click.
+  const avatarTargetGone =
+    avatarView !== null &&
+    (avatarView.serverId !== serverId ||
+      avatarCandidate === null ||
+      avatarCandidate.connectedAtUnixMs !== avatarView.connectedAt);
+  if (avatarTargetGone) {
+    setAvatarView(null);
+  }
+  const avatarUser =
+    avatarTargetGone || avatarCandidate === null ? null : avatarCandidate;
+  const avatarOpen = avatarView?.open === true && avatarUser !== null;
+
+  // Focus belongs to the close, not to a row that may already be gone.
+  useEffect(() => {
+    if (avatarView === null && avatarRestore.current?.isConnected) {
+      avatarRestore.current.focus();
+    }
+  }, [avatarView]);
 
   return (
     <aside
@@ -180,7 +250,8 @@ export function MembersPane({
                       viewers={
                         user.streaming ? streamViewers(users, user.id) : []
                       }
-                      onOpen={(event) => openMenu(user, event)}
+                      onPrimary={(row) => openPrimary(user, row)}
+                      onMenu={(position) => openMenu(user, position)}
                     />
                   </li>
                 ))}
@@ -225,7 +296,8 @@ export function MembersPane({
                           viewers={
                             user.streaming ? streamViewers(users, user.id) : []
                           }
-                          onOpen={(event) => openMenu(user, event)}
+                          onPrimary={(row) => openPrimary(user, row)}
+                          onMenu={(position) => openMenu(user, position)}
                         />
                       </li>
                     ))}
@@ -236,6 +308,17 @@ export function MembersPane({
           </section>
         ) : null}
       </div>
+      <AvatarViewerDialog
+        user={avatarUser}
+        open={avatarOpen}
+        attempt={avatarView?.attempt ?? 0}
+        onOpenChange={(next) => {
+          if (!next) {
+            setAvatarView(null);
+          }
+        }}
+        serverId={serverId}
+      />
     </aside>
   );
 }
@@ -249,7 +332,8 @@ function MemberRow({
   online,
   viewers = [],
   compact = false,
-  onOpen,
+  onPrimary,
+  onMenu,
 }: {
   user: UserView;
   isSelf: boolean;
@@ -259,7 +343,8 @@ function MemberRow({
   online: boolean;
   viewers?: UserView[];
   compact?: boolean;
-  onOpen: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  onPrimary: (row: HTMLButtonElement) => void;
+  onMenu: (position: { x: number; y: number }) => void;
 }) {
   const { t } = useTranslation();
   const highestRole = roles
@@ -269,14 +354,34 @@ function MemberRow({
   const roleLabel = roleName(highestRole, t);
   const displayName = isSelf ? t("users.you") : user.nickname;
 
+  function showMenu(row: HTMLButtonElement) {
+    const rect = row.getBoundingClientRect();
+    onMenu({ x: rect.left, y: rect.bottom });
+  }
+
   return (
     <button
       type="button"
-      onClick={onOpen}
+      onClick={(event) => onPrimary(event.currentTarget)}
       onContextMenu={(event) => {
         event.preventDefault();
-        onOpen(event);
+        onMenu({ x: event.clientX, y: event.clientY });
       }}
+      onKeyDown={(event) => {
+        // A keyboard context menu is Shift+F10 or the dedicated Menu key.
+        if (
+          (event.key === "F10" && event.shiftKey) ||
+          event.key === "ContextMenu"
+        ) {
+          event.preventDefault();
+          showMenu(event.currentTarget);
+        }
+      }}
+      title={
+        isSelf
+          ? t("members.openProfile")
+          : t("members.openAvatar", { name: user.nickname })
+      }
       data-testid={`member-pane-${user.id}`}
       className={cn(
         "flex w-full items-center gap-2.5 rounded-md px-2 text-left transition-colors duration-150 hover:bg-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent",

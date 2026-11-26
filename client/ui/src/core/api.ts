@@ -251,6 +251,38 @@ export interface StreamCredentialsView {
   presets: string[];
 }
 
+/** OS/API support for the optional native screen publisher (stage P16). */
+export interface NativeStreamSupport {
+  supported: boolean;
+  /** `IsCursorCaptureEnabled` exists (Windows 10 2004+). */
+  cursorCaptureAvailable: boolean;
+  /** `IsBorderRequired` exists (Windows 11 22000+). */
+  borderApiAvailable: boolean;
+  /** Token-free reason when the native mode cannot run here. */
+  reason: string | null;
+}
+
+/** One token-free event of the optional native publisher. */
+export type NativeStreamEvent =
+  | { type: "picking" }
+  | {
+      type: "publishing";
+      preset: string;
+      cursorDisabled: boolean;
+      borderRemoved: boolean;
+    }
+  | { type: "cancelled" }
+  | { type: "reconnecting" }
+  | { type: "ended"; reason: string }
+  | { type: "error"; code: string; message: string }
+  | { type: "stopped" };
+
+/** An event and the caller run id it belongs to. */
+export interface NativeStreamMessage {
+  runId: string;
+  event: NativeStreamEvent;
+}
+
 export interface ServerBookmark {
   /** `host:port`; stable across certificate changes (ADR 0004, ADR 0008). */
   id: string;
@@ -403,6 +435,9 @@ export interface VoiceStatePatch {
   away?: boolean | null;
 }
 
+/** Which own voice flag the control-bar button or a global hotkey toggles. */
+export type VoiceToggle = "mute" | "deafen";
+
 export interface IdentityInfo {
   publicKey: string;
   fingerprint: string;
@@ -537,8 +572,16 @@ export interface VoiceSettings {
   processing: AudioProcessing;
   /** 0..200 %. */
   outputVolume: number;
+  /** Last voice-activation threshold, kept across mode changes. */
+  activationThresholdDb: number;
   /** Level the loudness of incoming voices (P17). */
   levelVoices: boolean;
+  /**
+   * Capture configured modifier combinations (for example `Ctrl+Shift+M`) in
+   * the background. Off by default; a single key or mouse button is global
+   * without it (ADR 0012).
+   */
+  backgroundHotkeys: boolean;
   sounds: CueSettings;
   hotkeys: HotkeyBinding[];
 }
@@ -684,6 +727,20 @@ export interface PttStatus {
   error: string | null;
 }
 
+/**
+ * Which actions the global Raw Input registration delivers.
+ *
+ * Push-to-talk, mute and deafen are independent: an invalid PTT binding must
+ * not make the valid toggles look window-only.
+ */
+export interface GlobalInputStatus {
+  registered: boolean;
+  keyboardCaptured: boolean;
+  pushToTalk: boolean;
+  toggleMute: boolean;
+  toggleDeafen: boolean;
+}
+
 /** Voice engine state. */
 export interface VoiceState {
   media: MediaPhase;
@@ -695,6 +752,7 @@ export interface VoiceState {
   micTest: boolean;
   gate: GateMode;
   pushToTalk: PttStatus;
+  globalInput: GlobalInputStatus;
   inputDevice: string | null;
   outputDevice: string | null;
   error: string | null;
@@ -834,7 +892,39 @@ export interface CoreApi {
    */
   setWatching(streamerIds: number[]): Promise<void>;
 
+  /** Whether the optional native WGC publisher can run on this Windows build. */
+  nativeStreamSupport(): Promise<NativeStreamSupport>;
+
+  /**
+   * Starts the optional native publisher after the system picker. Returns once
+   * the picker is queued; `subscribeNativeStream` carries the result. A
+   * cancelled picker does not start a capture. `runId` is the caller's key for
+   * both the start and the matching stop.
+   */
+  startNativeStream(
+    runId: string,
+    channelId: number,
+    preset: "720p30" | "1080p30",
+    includeAudio: boolean,
+  ): Promise<void>;
+
+  /**
+   * Stops the native publisher and its stream audio. A run id stops exactly
+   * that caller's run; `null` is the privileged app-wide shutdown path.
+   */
+  stopNativeStream(runId: string | null): Promise<void>;
+
+  /** Last native event, for a dialog that opens after the stream started. */
+  getNativeStreamState(): Promise<NativeStreamMessage | null>;
+
+  /** Subscribes to native publisher events (picking/publishing/ended/...). */
+  subscribeNativeStream(
+    listener: (message: NativeStreamMessage) => void,
+  ): () => void;
+
   setVoiceState(patch: VoiceStatePatch): Promise<void>;
+  /** Flips mute/deafen from the core's latest persisted value. */
+  toggleVoiceState(field: VoiceToggle): Promise<void>;
   setNickname(nickname: string): Promise<void>;
   removeServer(id: string): Promise<ServerBookmark[]>;
   identityInfo(): Promise<IdentityInfo>;
