@@ -1,6 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Loader2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
 import { EmptyState } from "@/components/common/EmptyState";
@@ -21,6 +21,12 @@ import { MessageItem } from "./MessageItem";
 export interface MessageListProps {
   target: ChatTarget;
   canManage: boolean;
+  /**
+   * False while the chat is mounted but hidden behind another tab. The real
+   * browser drops the scroll offset of a `display: none` scroller, so the
+   * feed captures it when it becomes hidden and restores it when shown.
+   */
+  active?: boolean;
 }
 
 /**
@@ -33,7 +39,11 @@ export interface MessageListProps {
  *
  * The read anchor is captured once, when the feed opens (see `readAnchor`).
  */
-export function MessageList({ target, canManage }: MessageListProps) {
+export function MessageList({
+  target,
+  canManage,
+  active = true,
+}: MessageListProps) {
   const { t } = useTranslation();
   const key = conversationKey(target);
   const conversation = useChatStore((state) => state.conversations[key]);
@@ -59,6 +69,20 @@ export function MessageList({ target, canManage }: MessageListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const nearBottom = useRef(true);
   const previousCount = useRef(0);
+  // Set only when the feed is about to be hidden; restoring it by hand is the
+  // only reliable way across `display: none` (P31 tab switch).
+  const savedOffset = useRef<number | null>(null);
+  const visible = useRef(active);
+  // The tab switch commits `display: none` after this render, so the last
+  // visible offset has to be read here, before the browser drops it. Scrolling
+  // itself does not need to update the ref: the next hide captures the value.
+  if (active !== visible.current) {
+    const element = parentRef.current;
+    if (!active && element && element.clientHeight > 0) {
+      savedOffset.current = element.scrollTop;
+    }
+    visible.current = active;
+  }
   const messages = useMemo(
     () => conversation?.messages ?? [],
     [conversation?.messages],
@@ -77,51 +101,120 @@ export function MessageList({ target, canManage }: MessageListProps) {
     getItemKey: (index) => rows[index]?.key ?? index,
   });
 
+  // `display: none` drops the offset of a real browser scroller, and the
+  // virtualizer measures a zero-height viewport while the streams tab is open.
+  // Restore before paint, then retry for a few frames until the measured rows
+  // give the scroller enough height to accept the offset (P31).
+  useLayoutEffect(() => {
+    if (!active) {
+      return;
+    }
+    const element = parentRef.current;
+    if (!element) {
+      return;
+    }
+    const offset = savedOffset.current;
+    const atBottom = nearBottom.current;
+    // A first page that finished while hidden has no captured offset, and a
+    // feed that sat at its lower edge should follow messages that arrived in
+    // the meantime. Only a scrolled-up feed gets its exact offset back.
+    if (offset === null || atBottom) {
+      if (conversation?.loaded && rows.length > 0) {
+        const frame = requestAnimationFrame(() => {
+          virtualizer.measure();
+          virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
+          nearBottom.current = true;
+        });
+        return () => cancelAnimationFrame(frame);
+      }
+      if (offset === null) {
+        return;
+      }
+    }
+    let frame = 0;
+    let attempts = 0;
+    const restore = () => {
+      element.scrollTop = offset;
+      if (Math.abs(element.scrollTop - offset) > 1 && attempts < 20) {
+        attempts += 1;
+        virtualizer.measure();
+        frame = requestAnimationFrame(restore);
+      }
+    };
+    restore();
+    return () => cancelAnimationFrame(frame);
+    // The loaded rows are read on the show transition only; adding them would
+    // re-run the effect on every delivered message and fight the reader.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, virtualizer]);
+
   const stale = conversation?.stale ?? false;
   useEffect(() => {
+    // A hidden chat must not load (and acknowledge) history behind the streams
+    // tab. The effect runs again when the tab becomes active (P31).
+    if (!active) {
+      return;
+    }
     // A reconnect marks the cache stale: the open conversation reloads its
     // first page and merges it instead of leaving a silent gap.
     if (stale || !conversation?.loaded) {
       void ensureLoaded(target);
     }
-  }, [ensureLoaded, key, target, stale, conversation?.loaded]);
+  }, [active, ensureLoaded, key, target, stale, conversation?.loaded]);
 
-  // Scroll to the newest row after the first page arrives.
+  // Scroll to the newest row after the first page arrives. If the page lands
+  // while the feed is hidden, the show-time layout effect above takes over.
   useEffect(() => {
+    if (!active) {
+      return;
+    }
     if (conversation?.loaded && rows.length > 0) {
       requestAnimationFrame(() => {
         virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
         nearBottom.current = true;
       });
     }
-    // Only the first successful load matters here.
+    // Only the first successful load matters here; a later show is handled by
+    // the restore effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation?.loaded, key]);
 
-  // A read marker only moves while the feed is at its lower edge. Reading
-  // history must not clear the unread counter of messages the user has not
-  // reached yet.
+  // A read marker only moves while the feed is visible and at its lower edge.
+  // Reading history must not clear the unread counter of messages the user has
+  // not reached yet; a hidden feed must not clear messages the user has not
+  // seen, and returning at the bottom acknowledges what arrived meanwhile.
   const newestId = messages.at(-1)?.id ?? 0;
   useEffect(() => {
-    if (!newestId || !nearBottom.current || document.hidden) {
+    if (!active || !newestId || !nearBottom.current || document.hidden) {
       return;
     }
     void markRead(target, newestId);
-  }, [newestId, target, markRead]);
+  }, [active, newestId, target, markRead]);
 
   useEffect(() => {
     const onVisibility = () => {
-      if (!document.hidden && nearBottom.current && newestId > 0) {
+      if (
+        active &&
+        !document.hidden &&
+        nearBottom.current &&
+        newestId > 0
+      ) {
         void markRead(target, newestId);
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, [markRead, newestId, target]);
+  }, [active, markRead, newestId, target]);
 
-  // Auto-scroll on messages that arrive after the page was shown.
+  // Auto-scroll on messages that arrive after the page was shown. A hidden
+  // feed does not move; the show-time layout effect puts it back or follows
+  // the newest row.
   useEffect(() => {
     const count = messages.length;
+    if (!active) {
+      previousCount.current = count;
+      return;
+    }
     if (count > previousCount.current && previousCount.current > 0) {
       const newest = messages[count - 1];
       if (nearBottom.current || newest?.senderId === selfUserId) {
@@ -131,7 +224,7 @@ export function MessageList({ target, canManage }: MessageListProps) {
       }
     }
     previousCount.current = count;
-  }, [messages, rows.length, selfUserId, virtualizer]);
+  }, [active, messages, rows.length, selfUserId, virtualizer]);
 
   const onScroll = useCallback(() => {
     const element = parentRef.current;
@@ -142,7 +235,13 @@ export function MessageList({ target, canManage }: MessageListProps) {
       element.scrollHeight - element.scrollTop - element.clientHeight;
     const wasNearBottom = nearBottom.current;
     nearBottom.current = distanceToBottom < 120;
-    if (!wasNearBottom && nearBottom.current && newestId > 0 && !document.hidden) {
+    if (
+      active &&
+      !wasNearBottom &&
+      nearBottom.current &&
+      newestId > 0 &&
+      !document.hidden
+    ) {
       void markRead(target, newestId);
     }
     if (element.scrollTop < 100 && conversation?.hasMore && !conversation.loading) {
@@ -159,6 +258,7 @@ export function MessageList({ target, canManage }: MessageListProps) {
       });
     }
   }, [
+    active,
     conversation?.hasMore,
     conversation?.loading,
     loadOlder,
@@ -214,7 +314,7 @@ export function MessageList({ target, canManage }: MessageListProps) {
       tabIndex={0}
       role="region"
       aria-label={t("chat.messagesLabel")}
-      className="chat-surface flex min-h-0 flex-1 flex-col overflow-y-auto bg-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent"
+      className="chat-surface flex min-h-0 flex-1 flex-col overflow-y-auto bg-background select-text focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent"
       data-testid="message-list"
       data-conversation={key}
     >

@@ -110,6 +110,14 @@
 
   --shadow-panel: 0 12px 32px rgb(0 0 0 / 0.38);
   --scrim: oklch(0.12 0 0 / 0.62);
+
+  /* Interactive controls stay flat (P31). Windows 10 WebView2 paints a native
+     bevel and a small drop shadow under themed native buttons while
+     `appearance` is auto: the shadow is not in the CSS and cannot be seen on
+     Windows 11. The rule below opts buttons out of the native look and pins
+     them to this token. Sheets, menus, tooltips, popovers and dialogs keep
+     their own elevation through --sheet-shadow and --shadow-panel. */
+  --control-shadow: 0 0 #0000;
 }
 
 /* --------------------------------------------------------------- presets --- */
@@ -425,6 +433,29 @@
     font-size: 13px;
     line-height: 1.45;
     overflow: hidden;
+    /* Interface chrome is not a document (P31). Message text and the composer
+       opt back in with `select-text`; fields and copyable code stay usable. */
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  input,
+  textarea,
+  select,
+  [contenteditable="true"],
+  code,
+  pre {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  /* Native button styling differs between Windows 10 and 11; the flat look is
+     the product decision, so pin every button to the control token. */
+  button,
+  [role="button"] {
+    -webkit-appearance: none;
+    appearance: none;
+    box-shadow: var(--control-shadow);
   }
 
   /* Browser preview only: the desktop shell calls WebView2's native zoom.

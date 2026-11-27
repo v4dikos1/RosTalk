@@ -189,9 +189,9 @@ describe("ChannelTree", () => {
     expect(onUserContextMenu.mock.calls[0]?.[0]).toMatchObject({ id: 2 });
   });
 
-  it("shows an empty hint for leaf voice channels without people", () => {
+  it("renders no placeholder row for leaf voice channels without people", () => {
     renderTree();
-    expect(screen.getAllByText("Здесь никого")).toHaveLength(2);
+    expect(screen.queryByText("Здесь никого")).not.toBeInTheDocument();
   });
 
   it("shows the empty tree state", () => {

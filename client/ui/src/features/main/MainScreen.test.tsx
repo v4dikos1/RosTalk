@@ -33,7 +33,7 @@ describe("MainScreen", () => {
       loaded: true,
       error: null,
     });
-    useAppStore.setState({ selectedChannelId: 3 });
+    useAppStore.setState({ selectedChannelId: 3, view: "chat" });
   });
 
   it("shows channels and users from the core snapshot", () => {
@@ -216,6 +216,67 @@ describe("MainScreen", () => {
     await waitFor(() =>
       expect(screen.getByTestId("chat-input")).toHaveValue(""),
     );
+  });
+
+  it("keeps the chat scroll and draft while the streams tab is open", async () => {
+    useAppStore.setState({ selectedChannelId: 4, view: "chat" });
+    useChatStore.setState({
+      conversations: {
+        "channel:4": {
+          key: "channel:4",
+          target: { kind: "channel", channelId: 4 },
+          messages: Array.from({ length: 30 }, (_, index) => ({
+            id: index + 1,
+            channelId: 4,
+            senderId: 2,
+            recipientId: 0,
+            senderNickname: "Аня",
+            body: `сообщение ${index + 1}`,
+            createdAtUnixMs: 1_700_000_000_000 + index,
+            editedAtUnixMs: 0,
+            attachments: [],
+            mentionUserIds: [],
+          })),
+          nextCursor: "",
+          hasMore: false,
+          loaded: true,
+          loading: false,
+          error: null,
+          stale: false,
+        },
+      },
+      activeKey: "channel:4",
+      proxy: null,
+      notices: [],
+    });
+    renderScreen();
+
+    const input = await screen.findByTestId("chat-input");
+    fireEvent.change(input, { target: { value: "черновик" } });
+    const panel = screen.getByTestId("chat-panel");
+    const list = await screen.findByTestId("message-list");
+    list.scrollTop = 120;
+    expect(screen.getByTestId("chat-view")).toHaveClass("flex");
+
+    fireEvent.click(screen.getByTestId("main-tab-streams"));
+    // The same DOM nodes stay mounted; only the wrapper is hidden.
+    expect(screen.getByTestId("chat-panel")).toBe(panel);
+    expect(screen.getByTestId("chat-view")).toHaveClass("hidden");
+    expect(screen.getByTestId("message-list")).toBe(list);
+    expect(list.scrollTop).toBe(120);
+
+    fireEvent.click(screen.getByTestId("main-tab-chat"));
+    expect(screen.getByTestId("chat-view")).toHaveClass("flex");
+    expect(screen.getByTestId("chat-panel")).toBe(panel);
+    expect(screen.getByTestId("message-list")).toBe(list);
+    expect(list.scrollTop).toBe(120);
+    expect(input).toHaveValue("черновик");
+  });
+
+  it("keeps copyable values selectable outside chat", async () => {
+    renderScreen();
+    fireEvent.click(screen.getAllByTestId("quality-indicator")[0] as HTMLElement);
+    expect(await screen.findByTestId("quality-host")).toHaveClass("select-text");
   });
 
   it("shows only the messages of the conversation that is open", async () => {

@@ -56,14 +56,7 @@ interface UserRowModel {
   depth: number;
 }
 
-interface EmptyRowModel {
-  key: string;
-  interactive: false;
-  kind: "empty";
-  depth: number;
-}
-
-type RowModel = ChannelRowModel | UserRowModel | EmptyRowModel;
+type RowModel = ChannelRowModel | UserRowModel;
 
 function ordered(channels: ChannelView[]): ChannelView[] {
   return channels
@@ -169,14 +162,6 @@ export function ChannelTree({
               interactive: true,
               kind: "user",
               user,
-              depth: depth + 1,
-            });
-          }
-          if (members.length === 0 && channel.kind === "voice" && children.length === 0) {
-            result.push({
-              key: `empty:${channel.id}`,
-              interactive: false,
-              kind: "empty",
               depth: depth + 1,
             });
           }
@@ -346,18 +331,6 @@ export function ChannelTree({
         className="space-y-px"
       >
         {rows.map((row, rowIndex) => {
-          if (row.kind === "empty") {
-            return (
-              <div
-                key={row.key}
-                role="none"
-                className="row-dense flex items-center text-[12px] italic text-faint"
-                style={{ paddingLeft: `${26 + row.depth * 12}px` }}
-              >
-                {t("tree.empty")}
-              </div>
-            );
-          }
           if (row.kind === "channel") {
             return (
               <ChannelRow

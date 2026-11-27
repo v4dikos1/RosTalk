@@ -993,7 +993,7 @@ function IdentitySection() {
           {t("settings.identity.hint")}
         </p>
         <p
-          className="mt-2 break-all font-mono text-[11px] text-muted"
+          className="mt-2 break-all font-mono text-[11px] text-muted select-text"
           data-testid="identity-fingerprint"
         >
           {fingerprint ?? t("settings.identity.loading")}

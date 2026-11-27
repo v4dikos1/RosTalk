@@ -123,6 +123,30 @@ export function fixtureAttachmentUrl(id: number): string {
   return fixtureAttachmentUrls.get(id) ?? fixtureImage("#3b4252", "#1f2430");
 }
 
+/**
+ * Long read-only history for scroll checks: `?fixtures=1&longChat=1` appends
+ * forty messages to the open conversation. Only the browser preview and
+ * Playwright read this; the desktop client never loads the fixture adapter.
+ */
+function fixtureLongMessages(target: ChatTarget): MessageView[] {
+  return Array.from({ length: 40 }, (_, index) => ({
+    id: 9_000 + index,
+    channelId: target.kind === "channel" ? target.channelId : 0,
+    senderId: index % 2 === 0 ? 2 : 1,
+    recipientId: target.kind === "dm" ? target.peerId : 0,
+    senderNickname: index % 2 === 0 ? "Anya" : "Alex",
+    body: `Длинная история, сообщение ${index + 1}. Проверяем сохранение позиции скролла при смене вкладок.`,
+    createdAtUnixMs: chatStart + (index + 10) * minute,
+    editedAtUnixMs: 0,
+    attachments: [],
+    mentionUserIds: [],
+  }));
+}
+
+const longChat =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("longChat") === "1";
+
 /** Chat history for the fixture adapter: no network and no server. */
 export function fixtureChatHistory(
   target: ChatTarget,
@@ -133,15 +157,17 @@ export function fixtureChatHistory(
   nextCursor: string;
   hasMore: boolean;
 } {
-  const all = fixtureMessages
-    .filter((message) =>
-      target.kind === "channel"
-        ? message.channelId === target.channelId
-        : message.channelId === 0 &&
-          (message.senderId === target.peerId ||
-            message.recipientId === target.peerId),
-    )
-    .sort((a, b) => a.id - b.id);
+  const all = fixtureMessages.filter((message) =>
+    target.kind === "channel"
+      ? message.channelId === target.channelId
+      : message.channelId === 0 &&
+        (message.senderId === target.peerId ||
+          message.recipientId === target.peerId),
+  );
+  if (longChat) {
+    all.push(...fixtureLongMessages(target));
+  }
+  all.sort((a, b) => a.id - b.id);
   const before = cursor ? Number(cursor) : Number.MAX_SAFE_INTEGER;
   const older = all.filter((message) => message.id < before);
   const page = older.slice(Math.max(0, older.length - limit));

@@ -618,7 +618,10 @@ export function HostingWizard({ api }: { api: HostingApi }) {
                         ? t("hosting.server.keyNew")
                         : t("hosting.server.keyMismatch")}
                   </p>
-                  <p className="break-all font-mono text-[11px] text-foreground">
+                  <p
+                    className="break-all font-mono text-[11px] text-foreground select-text"
+                    data-testid="hosting-host-fingerprint"
+                  >
                     {hostKey.algorithm} SHA256:{hostKey.fingerprint}
                   </p>
                   {hostKey.status === "mismatch" ? (
@@ -1048,7 +1051,7 @@ export function HostingWizard({ api }: { api: HostingApi }) {
             >
               {errorText}
               {error.fingerprint ? (
-                <span className="mt-1 block break-all font-mono text-[10px] text-danger">
+                <span className="mt-1 block break-all font-mono text-[10px] text-danger select-text">
                   SHA256:{error.fingerprint}
                 </span>
               ) : null}

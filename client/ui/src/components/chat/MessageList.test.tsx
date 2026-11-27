@@ -10,6 +10,10 @@ import { MessageList } from "./MessageList";
 
 // TanStack Virtual measures DOM nodes; jsdom has no layout. The mock returns
 // every item so the test exercises the real MessageItem tree.
+const virtualizer = vi.hoisted(() => ({
+  scrollToIndex: vi.fn(),
+}));
+
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
     getTotalSize: () => count * 80,
@@ -20,9 +24,18 @@ vi.mock("@tanstack/react-virtual", () => ({
         start: index * 80,
       })),
     measureElement: () => {},
-    scrollToIndex: () => {},
+    measure: () => {},
+    scrollToIndex: virtualizer.scrollToIndex,
   }),
 }));
+
+const originalMarkRead = useChatStore.getState().markRead;
+
+afterEach(() => {
+  // These tests replace the store action to observe read receipts; leaving it
+  // replaced made the file order-dependent (R2-5).
+  useChatStore.setState({ markRead: originalMarkRead });
+});
 
 function message(
   id: number,
@@ -101,6 +114,8 @@ describe("MessageList", () => {
     expect(container.querySelector("script")).toBeNull();
     expect(container.querySelector("img")).toBeNull();
     expect(screen.getByText(/<img src=x/)).toBeInTheDocument();
+    // Chat text opts back into selection inside the otherwise inert chrome.
+    expect(screen.getByTestId("message-list")).toHaveClass("select-text");
   });
 
   it("hides the avatar and name on a continuation row", () => {
@@ -162,6 +177,115 @@ describe("MessageList", () => {
     });
 
     expect(markRead).not.toHaveBeenCalled();
+  });
+
+  it("does not mark read a message that arrived while the chat was hidden", async () => {
+    const markRead = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({
+      conversations: {
+        "channel:1": {
+          key: "channel:1",
+          target: { kind: "channel", channelId: 1 },
+          messages: [message(1, "one"), message(2, "two")],
+          nextCursor: "",
+          hasMore: false,
+          loaded: true,
+          loading: false,
+          error: null,
+          stale: false,
+        },
+      },
+      activeKey: null,
+      proxy: null,
+      notices: [],
+      markRead,
+    });
+
+    const target = { kind: "channel" as const, channelId: 1 };
+    const { rerender } = render(
+      <MessageList target={target} canManage={false} active={false} />,
+    );
+    act(() => {
+      useChatStore.getState().applyMessage(message(3, "three"), 2);
+    });
+    // The feed is behind the streams tab: the message is not seen yet.
+    expect(markRead).not.toHaveBeenCalled();
+
+    rerender(<MessageList target={target} canManage={false} active />);
+    await waitFor(() =>
+      expect(markRead).toHaveBeenCalledWith(
+        { kind: "channel", channelId: 1 },
+        3,
+      ),
+    );
+  });
+
+  it("scrolls to the newest row only after a page that arrived hidden is shown", async () => {
+    const target = { kind: "channel" as const, channelId: 1 };
+    useChatStore.setState({
+      conversations: {
+        "channel:1": {
+          key: "channel:1",
+          target,
+          messages: [],
+          nextCursor: "",
+          hasMore: false,
+          loaded: false,
+          loading: true,
+          error: null,
+          stale: false,
+        },
+      },
+      activeKey: null,
+      proxy: null,
+      notices: [],
+    });
+    virtualizer.scrollToIndex.mockClear();
+    const flushFrame = () =>
+      act(
+        () =>
+          new Promise<void>((resolve) => {
+            requestAnimationFrame(() => resolve());
+          }),
+      );
+
+    const { rerender } = render(
+      <MessageList target={target} canManage={false} active={false} />,
+    );
+    expect(screen.getByTestId("message-skeleton")).toBeInTheDocument();
+    await flushFrame();
+    expect(virtualizer.scrollToIndex).not.toHaveBeenCalled();
+
+    // The first page finishes while the chat is still behind the streams tab.
+    act(() => {
+      useChatStore.setState({
+        conversations: {
+          "channel:1": {
+            key: "channel:1",
+            target,
+            messages: [message(1, "one"), message(2, "two")],
+            nextCursor: "",
+            hasMore: false,
+            loaded: true,
+            loading: false,
+            error: null,
+            stale: false,
+          },
+        },
+      });
+    });
+    await flushFrame();
+    await flushFrame();
+    expect(virtualizer.scrollToIndex).not.toHaveBeenCalled();
+
+    rerender(<MessageList target={target} canManage={false} active />);
+    await waitFor(() =>
+      expect(virtualizer.scrollToIndex).toHaveBeenCalled(),
+    );
+    const call = virtualizer.scrollToIndex.mock.calls.at(-1);
+    // Date separator plus two messages: the newest row is the last index.
+    expect(call?.[0]).toBe(2);
+    expect(call?.[1]).toEqual({ align: "end" });
   });
 
   it("shows the empty state once an empty page is loaded", () => {

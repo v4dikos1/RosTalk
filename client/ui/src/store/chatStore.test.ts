@@ -247,6 +247,105 @@ describe("chat store", () => {
     expect(state?.error).toBeNull();
   });
 
+  it("does not acknowledge a first page loaded while its panel is hidden", async () => {
+    const markRead = vi.mocked(coreApi.markRead);
+    markRead.mockClear();
+    const cached = () => ({
+      ...conversation([], "")["channel:10"],
+      loaded: false,
+      stale: true,
+      hasMore: false,
+    });
+    fetchHistoryMock.mockResolvedValue({
+      messages: [message(7)],
+      nextCursor: "",
+      hasMore: false,
+    });
+    useChatStore.setState({
+      conversations: { "channel:10": cached() },
+      activeKey: null,
+      proxy: { baseUrl: "http://127.0.0.1:9", token: "proxy" },
+    });
+
+    await useChatStore
+      .getState()
+      .ensureLoaded({ kind: "channel", channelId: 10 });
+
+    expect(markRead).not.toHaveBeenCalled();
+
+    // The open panel acknowledges it when the reader returns.
+    fetchHistoryMock.mockResolvedValue({
+      messages: [message(8)],
+      nextCursor: "",
+      hasMore: false,
+    });
+    useChatStore.setState({
+      conversations: { "channel:10": cached() },
+      activeKey: "channel:10",
+    });
+    await useChatStore
+      .getState()
+      .ensureLoaded({ kind: "channel", channelId: 10 });
+
+    expect(markRead).toHaveBeenCalledWith(
+      { kind: "channel", channelId: 10 },
+      8,
+    );
+  });
+
+  it("does not acknowledge a first page while the window is hidden", async () => {
+    const markRead = vi.mocked(coreApi.markRead);
+    markRead.mockClear();
+    const cached = () => ({
+      ...conversation([], "")["channel:10"],
+      loaded: false,
+      stale: true,
+      hasMore: false,
+    });
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      get: () => true,
+    });
+    try {
+      fetchHistoryMock.mockResolvedValue({
+        messages: [message(9)],
+        nextCursor: "",
+        hasMore: false,
+      });
+      useChatStore.setState({
+        conversations: { "channel:10": cached() },
+        activeKey: "channel:10",
+        proxy: { baseUrl: "http://127.0.0.1:9", token: "proxy" },
+      });
+
+      await useChatStore
+        .getState()
+        .ensureLoaded({ kind: "channel", channelId: 10 });
+
+      expect(markRead).not.toHaveBeenCalled();
+    } finally {
+      Reflect.deleteProperty(document, "hidden");
+    }
+
+    // Visible again: the next first page is acknowledged.
+    fetchHistoryMock.mockResolvedValue({
+      messages: [message(10)],
+      nextCursor: "",
+      hasMore: false,
+    });
+    useChatStore.setState({
+      conversations: { "channel:10": cached() },
+    });
+    await useChatStore
+      .getState()
+      .ensureLoaded({ kind: "channel", channelId: 10 });
+
+    expect(markRead).toHaveBeenCalledWith(
+      { kind: "channel", channelId: 10 },
+      10,
+    );
+  });
+
   it("does not report an error while the proxy is missing and retries when it appears", async () => {
     chatProxyMock.mockResolvedValue(null);
     useChatStore.setState({

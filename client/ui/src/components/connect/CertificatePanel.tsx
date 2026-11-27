@@ -54,12 +54,15 @@ export function CertificatePanel({
             ? t("connect.certificateNew")
             : t("connect.certificateTitle")}
       </p>
-      <p className="break-all font-mono text-[11px] text-muted" data-testid="connect-fingerprint">
+      <p
+        className="break-all font-mono text-[11px] text-muted select-text"
+        data-testid="connect-fingerprint"
+      >
         {probe.fingerprint}
       </p>
       {probe.certificateChanged ? (
         <>
-          <p className="break-all font-mono text-[10px] text-faint line-through">
+          <p className="break-all font-mono text-[10px] text-faint line-through select-text">
             {probe.knownFingerprint}
           </p>
           <p className="text-[11px] leading-snug text-muted">

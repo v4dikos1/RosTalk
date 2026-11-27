@@ -346,6 +346,7 @@ describe("SettingsDialog", () => {
     expect(await screen.findByTestId("diagnostics-exported")).toHaveTextContent(
       "rostalk-diagnostics-20261122-120000.log",
     );
+    expect(screen.getByTestId("diagnostics-exported")).toHaveClass("select-text");
 
     await userEvent.click(screen.getByTestId("diagnostics-clear"));
     expect(screen.getByText("Удалить журнал? Файлы сотрутся с диска.")).toBeInTheDocument();

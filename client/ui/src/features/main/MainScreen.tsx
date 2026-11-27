@@ -605,14 +605,29 @@ export function MainScreen() {
                 <ErrorBoundary name="streams" className="flex-1">
                   <StreamsPanel channel={channel} />
                 </ErrorBoundary>
-              ) : chatTarget ? (
-                <ErrorBoundary name="chat" className="flex-1">
-                  <ChatPanel
-                    key={conversationKey(chatTarget)}
-                    target={chatTarget}
-                    channel={channel}
-                  />
-                </ErrorBoundary>
+              ) : null}
+              {chatTarget ? (
+                // The chat stays mounted while the streams tab is open: the
+                // virtualizer keeps its scroll offset and the composer keeps
+                // its draft (P31). `hidden` removes it from layout without
+                // unmounting, so switching back does not jump or flash.
+                <div
+                  data-testid="chat-view"
+                  className={
+                    view === "streams" && channel.kind === "voice"
+                      ? "hidden"
+                      : "flex min-h-0 flex-1 flex-col"
+                  }
+                >
+                  <ErrorBoundary name="chat" className="flex-1">
+                    <ChatPanel
+                      key={conversationKey(chatTarget)}
+                      target={chatTarget}
+                      channel={channel}
+                      active={!(view === "streams" && channel.kind === "voice")}
+                    />
+                  </ErrorBoundary>
+                </div>
               ) : null}
             </>
           ) : (

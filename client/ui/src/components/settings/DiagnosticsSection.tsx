@@ -136,7 +136,7 @@ export function DiagnosticsSection() {
         {exportedPath ? (
           <p
             role="status"
-            className="mt-2 break-all text-[11px] text-success"
+            className="mt-2 break-all text-[11px] text-success select-text"
             data-testid="diagnostics-exported"
           >
             {t("settings.diagnostics.exported", { path: exportedPath })}

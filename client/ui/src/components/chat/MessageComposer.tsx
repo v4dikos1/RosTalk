@@ -11,9 +11,11 @@ import {
 import { coreApi } from "@/core";
 import type { ChatTarget } from "@/core/api";
 import { formatFileSize } from "@/lib/chat";
+import { composerMetrics } from "@/lib/composer";
 import { cn } from "@/lib/utils";
 import { runCoreAction } from "@/store/coreStore";
 
+import { EmojiPicker } from "./EmojiPicker";
 import type { ChatUploads } from "./useChatUploads";
 
 export interface MessageComposerProps {
@@ -39,6 +41,8 @@ export function MessageComposer({
   const { t } = useTranslation();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const [fieldHeight, setFieldHeight] = useState(32);
   const inputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -48,6 +52,38 @@ export function MessageComposer({
     !sending &&
     !uploads.uploading &&
     (draft.trim().length > 0 || uploads.readyIds.length > 0);
+
+  // Grows to the cap and only then allows the native scrollbar (P31): an empty
+  // or single-line field must stay scrollbar-free in WebView2 on Windows 10.
+  function resizeField(element: HTMLTextAreaElement) {
+    element.style.height = "auto";
+    const metrics = composerMetrics(element.scrollHeight);
+    element.style.height = `${metrics.height}px`;
+    setOverflowing(metrics.overflowing);
+    setFieldHeight(metrics.height);
+  }
+
+  // A tooltip anchored to a button starts at the button's top edge and the
+  // textarea can be taller, so the offset grows with the field: the hint stays
+  // above the whole composer instead of covering the text (P31).
+  const tooltipOffset = Math.max(6, fieldHeight - 20);
+
+  function insertEmoji(char: string) {
+    const element = textareaRef.current;
+    const start = element?.selectionStart ?? draft.length;
+    const end = element?.selectionEnd ?? start;
+    setDraft(draft.slice(0, start) + char + draft.slice(end));
+    requestAnimationFrame(() => {
+      const field = textareaRef.current;
+      if (!field) {
+        return;
+      }
+      field.focus();
+      const caret = start + char.length;
+      field.setSelectionRange(caret, caret);
+      resizeField(field);
+    });
+  }
 
   async function send() {
     if (!canSubmit) {
@@ -61,7 +97,13 @@ export function MessageComposer({
     if (ok) {
       setDraft("");
       uploads.clear();
-      textareaRef.current?.focus();
+      requestAnimationFrame(() => {
+        const field = textareaRef.current;
+        if (field) {
+          field.focus();
+          resizeField(field);
+        }
+      });
     }
     setSending(false);
   }
@@ -76,7 +118,8 @@ export function MessageComposer({
   }
 
   return (
-    <div className="shrink-0 px-4 pb-4 pt-1">      {hasAttachments ? (
+    <div className="shrink-0 px-4 pb-4 pt-1" data-testid="message-composer">
+      {hasAttachments ? (
         <div className="mb-1.5 flex flex-wrap gap-1.5" data-testid="upload-queue">
           {uploads.pending.map((item) => (
             <div
@@ -145,7 +188,7 @@ export function MessageComposer({
         />
         <Tooltip>
           <TooltipTrigger asChild>
-            <span>
+            <span className="flex shrink-0">
               <Button
                 type="button"
                 variant="ghost"
@@ -160,7 +203,12 @@ export function MessageComposer({
               </Button>
             </span>
           </TooltipTrigger>
-          <TooltipContent>
+          <TooltipContent
+            side="top"
+            align="start"
+            sideOffset={tooltipOffset}
+            collisionPadding={8}
+          >
             {canAttach ? t("chat.attachHint") : t("chat.cannotAttach")}
           </TooltipContent>
         </Tooltip>
@@ -172,9 +220,7 @@ export function MessageComposer({
           maxLength={4000}
           onChange={(event) => {
             setDraft(event.target.value);
-            const element = event.currentTarget;
-            element.style.height = "auto";
-            element.style.height = `${Math.min(element.scrollHeight, 132)}px`;
+            resizeField(event.currentTarget);
           }}
           onPaste={onPaste}
           onKeyDown={(event) => {
@@ -187,12 +233,17 @@ export function MessageComposer({
           placeholder={canSend ? placeholder : t("chat.cannotSend")}
           aria-label={placeholder}
           data-testid="chat-input"
-          className="max-h-[132px] min-h-8 flex-1 resize-none rounded-md border border-transparent bg-transparent px-2 py-1.5 text-[13px] text-foreground outline-none placeholder:text-faint focus-visible:ring-1 focus-visible:ring-accent disabled:opacity-60"
+          className={cn(
+            "max-h-[132px] min-h-8 flex-1 resize-none rounded-md border border-transparent bg-transparent px-2 py-1.5 text-[13px] text-foreground outline-none select-text placeholder:text-faint focus-visible:ring-1 focus-visible:ring-accent disabled:opacity-60",
+            overflowing ? "overflow-y-auto" : "overflow-y-hidden",
+          )}
         />
+
+        <EmojiPicker onSelect={insertEmoji} />
 
         <Tooltip>
           <TooltipTrigger asChild>
-            <span>
+            <span className="flex shrink-0">
               <Button
                 type="button"
                 size="icon-sm"
@@ -209,7 +260,12 @@ export function MessageComposer({
               </Button>
             </span>
           </TooltipTrigger>
-          <TooltipContent>
+          <TooltipContent
+            side="top"
+            align="end"
+            sideOffset={tooltipOffset}
+            collisionPadding={8}
+          >
             {t("chat.sendHint")}
           </TooltipContent>
         </Tooltip>

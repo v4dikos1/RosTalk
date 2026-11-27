@@ -17,13 +17,20 @@ export interface ChatPanelProps {
   target: ChatTarget;
   channel?: ChannelView | undefined;
   peer?: UserView | undefined;
+  /** False while the panel is mounted but hidden behind the streams tab. */
+  active?: boolean;
 }
 
 /**
  * Channel or direct-message chat: feed, composer and the drop target.
  * Permissions are advisory here; the server checks every send again.
  */
-export function ChatPanel({ target, channel, peer }: ChatPanelProps) {
+export function ChatPanel({
+  target,
+  channel,
+  peer,
+  active = true,
+}: ChatPanelProps) {
   const { t } = useTranslation();
   const key = conversationKey(target);
   const state = useCoreStore((store) => store.state);
@@ -73,11 +80,17 @@ export function ChatPanel({ target, channel, peer }: ChatPanelProps) {
   );
 
   useEffect(() => {
+    // A hidden chat is not the active conversation: no read receipts, no
+    // reconnect reload and notifications stay on (P31).
+    if (!active) {
+      setActive(null);
+      return;
+    }
     setActive(key);
     return () => {
       setActive(null);
     };
-  }, [key, setActive]);
+  }, [active, key, setActive]);
 
   const placeholder =
     target.kind === "dm"
@@ -128,6 +141,7 @@ export function ChatPanel({ target, channel, peer }: ChatPanelProps) {
         key={key}
         target={target}
         canManage={canManage}
+        active={active}
       />
       <MessageComposer
         target={target}

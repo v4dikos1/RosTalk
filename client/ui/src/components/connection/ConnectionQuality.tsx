@@ -137,7 +137,10 @@ export function ConnectionQuality({ compact = false }: { compact?: boolean }) {
             {state?.server?.name ?? t("main.notConnected")}
           </dd>
           <dt className="text-muted">{t("quality.host")}</dt>
-          <dd className="truncate font-mono text-[11px] text-foreground">
+          <dd
+            className="truncate font-mono text-[11px] text-foreground select-text"
+            data-testid="quality-host"
+          >
             {activeServer?.host ?? "—"}
           </dd>
           <dt className="text-muted">{t("quality.latencyLabel")}</dt>

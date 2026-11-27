@@ -279,7 +279,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         };
       });
       const newest = page.messages.at(-1);
-      if (newest) {
+      // Only an open, visible conversation acknowledges its first page. A
+      // hidden chat or a minimized window keeps the unread counter until the
+      // reader returns (P31).
+      const windowHidden =
+        typeof document !== "undefined" && document.hidden;
+      if (newest && get().activeKey === key && !windowHidden) {
         void get().markRead(target, newest.id);
       }
     } catch (error) {

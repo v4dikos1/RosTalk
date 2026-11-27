@@ -170,6 +170,9 @@ describe("HostingWizard", () => {
 
     await user.click(screen.getByTestId("hosting-check-host"));
     await screen.findByTestId("hosting-host-key");
+    expect(screen.getByTestId("hosting-host-fingerprint")).toHaveClass(
+      "select-text",
+    );
     await user.click(screen.getByTestId("hosting-next"));
     await screen.findByTestId("hosting-step-check");
     await user.click(screen.getByTestId("hosting-install"));
