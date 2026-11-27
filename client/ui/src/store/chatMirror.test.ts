@@ -207,4 +207,45 @@ describe("chat mirror", () => {
     stop();
     vi.unstubAllGlobals();
   });
+
+  function created(overrides: Partial<MessageView>): CoreEvent {
+    return {
+      type: "delta",
+      payload: {
+        type: "messageCreated",
+        payload: { ...message(9), ...overrides },
+      },
+    };
+  }
+
+  it("notifies a mentioned user once per message even with a repeated tag", () => {
+    const stop = startChatMirror();
+    listener(snapshot("server-a"));
+    listener(created({ mentionUserIds: [1, 1] }));
+
+    expect(mocks.playVoiceSound).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().notices).toHaveLength(1);
+    expect(useChatStore.getState().notices[0]?.mention).toBe(true);
+    stop();
+  });
+
+  it("does not notify a third participant of the same message", () => {
+    const stop = startChatMirror();
+    listener(snapshot("server-a"));
+    listener(created({ mentionUserIds: [4] }));
+
+    expect(mocks.playVoiceSound).not.toHaveBeenCalled();
+    expect(useChatStore.getState().notices).toHaveLength(0);
+    stop();
+  });
+
+  it("does not treat the author's own mention as incoming", () => {
+    const stop = startChatMirror();
+    listener(snapshot("server-a"));
+    listener(created({ senderId: 1, mentionUserIds: [1] }));
+
+    expect(mocks.playVoiceSound).not.toHaveBeenCalled();
+    expect(useChatStore.getState().notices).toHaveLength(0);
+    stop();
+  });
 });

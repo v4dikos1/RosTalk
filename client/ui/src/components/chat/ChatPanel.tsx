@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { ChannelView, ChatTarget, UserView } from "@/core/api";
-import { conversationKey, DEFAULT_MAX_UPLOAD_BYTES } from "@/lib/chat";
+import { conversationKey, DEFAULT_MAX_UPLOAD_BYTES, mentionCandidates } from "@/lib/chat";
 import { hasPermission } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chatStore";
@@ -68,6 +68,10 @@ export function ChatPanel({
   const permissions = target.kind === "channel" ? channelPermissions : directPermissions;
   const canSend = hasPermission(permissions, "sendMessages");
   const canAttach = hasPermission(permissions, "attachFiles");
+  const mentionOptions = useMemo(
+    () => mentionCandidates(state?.users ?? [], target, state?.selfUserId ?? 0),
+    [state, target],
+  );
   const canManage =
     target.kind === "channel" && hasPermission(permissions, "manageMessages");
   // The server owns the limit (stage P3); the constant is only a fallback
@@ -148,6 +152,7 @@ export function ChatPanel({
         placeholder={placeholder}
         canSend={canSend}
         canAttach={canAttach}
+        mentionCandidates={mentionOptions}
         uploads={uploads}
       />
       <div

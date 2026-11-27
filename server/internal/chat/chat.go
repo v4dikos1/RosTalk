@@ -936,8 +936,9 @@ func (s *Service) decorateRow(
 
 // mentionCandidate is one user name prepared for the mention index.
 type mentionCandidate struct {
-	id   int64
-	name []rune
+	id     int64
+	name   []rune
+	online bool
 }
 
 // mentionKey indexes candidates by their case-folded first rune and their
@@ -962,6 +963,13 @@ func (s *Service) resolveMentions(ctx context.Context, senderID int64, conv Conv
 	if err != nil {
 		return nil, fmt.Errorf("list users for mentions: %w", err)
 	}
+	// Nicknames are unique among the online users, but ListUsers also returns
+	// old records: an offline namesake with a smaller id would otherwise take
+	// the tag from the person the author picked in the editor.
+	online := make(map[int64]struct{}, 8)
+	for _, presence := range s.hub.SnapshotUsers() {
+		online[presence.UserID] = struct{}{}
+	}
 	index := make(map[mentionKey][]mentionCandidate, len(users))
 	maxName := 0
 	for _, user := range users {
@@ -973,7 +981,8 @@ func (s *Service) resolveMentions(ctx context.Context, senderID int64, conv Conv
 			continue
 		}
 		key := mentionKey{first: foldMentionRune(name[0]), length: len(name)}
-		index[key] = append(index[key], mentionCandidate{id: user.ID, name: name})
+		_, isOnline := online[user.ID]
+		index[key] = append(index[key], mentionCandidate{id: user.ID, name: name, online: isOnline})
 		if len(name) > maxName {
 			maxName = len(name)
 		}
@@ -1001,35 +1010,44 @@ func (s *Service) resolveMentions(ctx context.Context, senderID int64, conv Conv
 		if limit > maxName {
 			limit = maxName
 		}
+		// The longest known name wins. Of names of the same length, an online
+		// user who may receive the mention beats an offline record. A name that
+		// exists but cannot receive the mention still shadows shorter names
+		// ("@Anna" is not "@Ann" plus text).
 		matched := false
+		var chosen *mentionCandidate
 		for length := limit; length >= 1 && !matched; length-- {
-			for _, user := range index[mentionKey{first: first, length: length}] {
-				if !strings.EqualFold(string(rest[:length]), string(user.name)) {
+			bucket := index[mentionKey{first: first, length: length}]
+			for candidateIndex := range bucket {
+				candidate := &bucket[candidateIndex]
+				if !strings.EqualFold(string(rest[:length]), string(candidate.name)) {
 					continue
 				}
 				after := rest[length:]
 				if len(after) > 0 && isMentionWordRune(after[0]) {
 					continue
 				}
-				if _, duplicate := seen[user.id]; duplicate {
-					matched = true
-					break
-				}
-				if conv.IsDM() {
-					if user.id != conv.PeerID {
-						matched = true
-						break
-					}
-				} else if !s.roles.CanView(user.id, conv.ChannelID) {
-					matched = true
-					break
-				}
-				seen[user.id] = struct{}{}
-				out = append(out, user.id)
 				matched = true
-				break
+				if conv.IsDM() {
+					if candidate.id != conv.PeerID {
+						continue
+					}
+				} else if !s.roles.CanView(candidate.id, conv.ChannelID) {
+					continue
+				}
+				if chosen == nil || (candidate.online && !chosen.online) {
+					chosen = candidate
+				}
 			}
 		}
+		if chosen == nil {
+			continue
+		}
+		if _, duplicate := seen[chosen.id]; duplicate {
+			continue
+		}
+		seen[chosen.id] = struct{}{}
+		out = append(out, chosen.id)
 	}
 	return out, nil
 }

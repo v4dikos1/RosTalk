@@ -1053,6 +1053,7 @@ export const en: typeof ru = {
     dmPlaceholder: "Message to {{name}}",
     send: "Send",
     sendHint: "Enter — send · Shift+Enter — new line",
+    mentionsList: "Mentions",
     attach: "Attach a file",
     attachHint:
       "Up to the server limit. Images, video and audio show in the feed; archives download.",

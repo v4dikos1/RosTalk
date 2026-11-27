@@ -2,6 +2,7 @@ import type {
   ChatProxyView,
   ChatTarget,
   MessageView,
+  UserView,
 } from "@/core/api";
 import {
   fixtureAttachmentUrl,
@@ -37,6 +38,22 @@ export function targetFromKey(key: ConversationKey): ChatTarget {
   const [kind, raw] = key.split(":");
   const id = Number(raw);
   return kind === "dm" ? { kind: "dm", peerId: id } : { kind: "channel", channelId: id };
+}
+
+/**
+ * Who the editor may offer for "@": the online users except the author, and in
+ * a direct message only the peer. The server resolves the tag again.
+ */
+export function mentionCandidates(
+  users: UserView[],
+  target: ChatTarget,
+  selfUserId: number,
+): UserView[] {
+  return users.filter(
+    (user) =>
+      user.id !== selfUserId &&
+      (target.kind === "channel" || user.id === target.peerId),
+  );
 }
 
 /**

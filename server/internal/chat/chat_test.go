@@ -118,6 +118,47 @@ func (f *fixture) user(t testing.TB, key byte, nickname, roleName string) int64 
 	return user.ID
 }
 
+// onlineUser gives a stored user a live presence. Nicknames are unique only
+// among connected users, so a test of a namesake needs one record online.
+func (f *fixture) onlineUser(t testing.TB, userID int64, nickname string) {
+	t.Helper()
+	session, err := state.NewSession(state.SessionParams{
+		UserID:      userID,
+		PublicKeyID: fmt.Sprintf("online-%d", userID),
+		Nickname:    nickname,
+		ConnectedAt: f.now,
+		Transport:   nopTransport{},
+	})
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	if _, err := f.hub.Register(session); err != nil {
+		t.Fatalf("register session: %v", err)
+	}
+	if err := f.hub.Welcome(session, 1, func(users []state.Presence) *rostalkv1.ServerSnapshot {
+		return &rostalkv1.ServerSnapshot{
+			Server: &rostalkv1.ServerInfo{OnlineUsers: uint32(len(users))},
+		}
+	}); err != nil {
+		t.Fatalf("welcome: %v", err)
+	}
+	t.Cleanup(func() {
+		session.Terminate(rostalkv1.ErrorCode_ERROR_CODE_UNSPECIFIED, "test finished")
+	})
+}
+
+// nopTransport keeps an online session without a socket.
+type nopTransport struct{}
+
+func (nopTransport) Read(ctx context.Context) (*rostalkv1.ClientFrame, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (nopTransport) Write(context.Context, *rostalkv1.ServerFrame) error { return nil }
+
+func (nopTransport) Close() error { return nil }
+
 func TestSendHistoryAndCursors(t *testing.T) {
 	f := newFixture(t)
 	author := f.user(t, 1, "Alice", roles.MemberName)
@@ -429,6 +470,45 @@ func TestMentionResolutionPrefersLongestName(t *testing.T) {
 		if !sameIDSet(got, testCase.want) {
 			t.Fatalf("mentions in %q = %v, want %v", testCase.body, got, testCase.want)
 		}
+	}
+}
+
+func TestMentionResolutionPrefersOnlineNamesake(t *testing.T) {
+	f := newFixture(t)
+	alice := f.user(t, 1, "Alice", roles.MemberName)
+	// The old record has a smaller id, so a plain "ORDER BY id" scan would pick
+	// it before the person the author actually chose in the editor.
+	f.user(t, 2, "Anna", roles.MemberName)
+	online := f.user(t, 3, "Anna", roles.MemberName)
+	carol := f.user(t, 4, "Carol", roles.MemberName)
+	f.onlineUser(t, online, "Anna")
+	ctx := context.Background()
+	conv := Conversation{ChannelID: f.channel}
+
+	// One tag repeated with different case still delivers once, to one user.
+	message, err := f.service.Send(ctx, alice, conv, "@Anna, @anna hello", nil)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if len(message.MentionIDs) != 1 || message.MentionIDs[0] != online {
+		t.Fatalf("mention ids = %v, want one delivery to the online namesake %d", message.MentionIDs, online)
+	}
+
+	mentioned, err := f.service.UnreadFor(ctx, online, conv)
+	if err != nil {
+		t.Fatalf("unread of the mentioned user: %v", err)
+	}
+	if mentioned.Mentions != 1 {
+		t.Fatalf("online namesake mentions = %d, want 1", mentioned.Mentions)
+	}
+
+	// A third participant reads the channel but is not mentioned.
+	third, err := f.service.UnreadFor(ctx, carol, conv)
+	if err != nil {
+		t.Fatalf("unread of a third participant: %v", err)
+	}
+	if third.Unread != 1 || third.Mentions != 0 {
+		t.Fatalf("third participant counter = %+v, want unread=1 mentions=0", third)
 	}
 }
 

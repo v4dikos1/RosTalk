@@ -1053,6 +1053,7 @@ export const ru = {
     dmPlaceholder: "Сообщение для {{name}}",
     send: "Отправить",
     sendHint: "Enter — отправить · Shift+Enter — новая строка",
+    mentionsList: "Упоминания",
     attach: "Прикрепить файл",
     attachHint:
       "До лимита сервера. Картинки, видео и звук видны в ленте, архивы скачиваются.",
