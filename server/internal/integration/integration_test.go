@@ -28,25 +28,31 @@ import (
 // runs two bots against a real server process (CONTRIBUTING.md).
 func newTestApp(t *testing.T, mutate func(*store.Store)) *server.App {
 	t.Helper()
+	return newTestAppWithConfig(t, mutate, nil)
+}
+
+func newTestAppWithConfig(t *testing.T, mutate func(*store.Store), configure func(*server.Config)) *server.App {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("rostalk-server runs only on Linux (CONTRIBUTING.md); CI and make test-server-docker cover the integration suite")
 	}
 
-	app, err := server.New(server.Config{
+	cfg := server.Config{
 		DataDir:    t.TempDir(),
 		Listen:     "127.0.0.1:0",
 		PublicHost: "127.0.0.1",
 		Media:      mediafake.New(),
 		Version:    "test",
-	})
+	}
+	if configure != nil {
+		configure(&cfg)
+	}
+	app, err := server.New(cfg)
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
 	if mutate != nil {
 		mutate(app.Store)
-	}
-	if err := app.Start(context.Background()); err != nil {
-		t.Fatalf("server.Start: %v", err)
 	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -55,6 +61,9 @@ func newTestApp(t *testing.T, mutate func(*store.Store)) *server.App {
 			t.Errorf("server.Close: %v", err)
 		}
 	})
+	if err := app.Start(context.Background()); err != nil {
+		t.Fatalf("server.Start: %v", err)
+	}
 	return app
 }
 

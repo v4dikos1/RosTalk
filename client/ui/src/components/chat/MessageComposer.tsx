@@ -286,7 +286,7 @@ export function MessageComposer({
         </div>
       ) : null}
 
-      <div className="relative flex w-full items-end gap-2 rounded-lg border border-border bg-raised p-1.5">
+      <div className="relative flex w-full items-center gap-2 rounded-lg border border-border bg-raised p-1.5">
         {mentionMatches.length > 0 ? (
           <ul
             role="listbox"

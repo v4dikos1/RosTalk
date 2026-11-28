@@ -19,6 +19,7 @@ import { GalleryPage } from "@/features/gallery/GalleryPage";
 import { OwnServerDialog } from "./features/own-server/OwnServerDialog";
 import { MainScreen } from "@/features/main/MainScreen";
 import { OnboardingWizard } from "@/features/onboarding/OnboardingWizard";
+import { PluginHost } from "@/plugins/new-year/PluginHost";
 import { coreApi, isDesktop } from "@/core";
 import { useGlobalHotkeys } from "@/hooks/useGlobalHotkeys";
 import { i18n } from "@/i18n";
@@ -242,6 +243,7 @@ export function App() {
       <ContextMenu />
       <ChatNotices />
       <TrayHint />
+      <PluginHost />
     </TooltipProvider>
   );
 }

@@ -9,6 +9,26 @@ import { fixtureState } from "@/mock/fixtures";
 import { MessageComposer } from "./MessageComposer";
 import type { ChatUploads } from "./useChatUploads";
 
+// TanStack Virtual needs DOM layout, which jsdom does not provide. The mock
+// renders the first rows so the grid is testable; the real windowing is
+// asserted by the Playwright spec against a browser.
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: ({ count }: { count: number }) => {
+    const rows = Math.min(count, 8);
+    return {
+      getTotalSize: () => count * 26,
+      getVirtualItems: () =>
+        Array.from({ length: rows }, (_, index) => ({
+          index,
+          key: index,
+          start: index * 26,
+        })),
+      scrollToIndex: vi.fn(),
+      scrollToOffset: vi.fn(),
+    };
+  },
+}));
+
 function renderComposer(ui: ReactElement) {
   return render(<TooltipProvider>{ui}</TooltipProvider>);
 }
@@ -675,7 +695,7 @@ describe("MessageComposer", () => {
 
     await user.click(screen.getByTestId("chat-emoji"));
     expect(await screen.findByTestId("emoji-picker")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "😀" }));
+    await user.click(await screen.findByRole("button", { name: "😀" }));
 
     await waitFor(() =>
       expect(screen.queryByTestId("emoji-picker")).not.toBeInTheDocument(),
@@ -700,12 +720,74 @@ describe("MessageComposer", () => {
     await user.click(screen.getByTestId("chat-emoji"));
     const search = await screen.findByTestId("emoji-search");
     await user.type(search, "кот");
-    expect(screen.getByTestId("emoji-🐱")).toBeInTheDocument();
+    expect(await screen.findByTestId("emoji-🐱")).toBeInTheDocument();
     expect(screen.queryByTestId("emoji-🔥")).not.toBeInTheDocument();
 
     await user.clear(search);
     await user.type(search, "fire");
-    expect(screen.getByTestId("emoji-🔥")).toBeInTheDocument();
+    expect(await screen.findByTestId("emoji-🔥")).toBeInTheDocument();
+  });
+
+  it("shows localized category tabs and virtualizes the full set", async () => {
+    const user = userEvent.setup();
+    renderComposer(
+      <MessageComposer
+        target={target}
+        placeholder="Message"
+        canSend
+        canAttach
+        uploads={uploads()}
+      />,
+    );
+
+    await user.click(screen.getByTestId("chat-emoji"));
+    const tabs = await screen.findByTestId("emoji-tabs");
+    expect(tabs.querySelectorAll('[role="tab"]')).toHaveLength(9);
+    expect(screen.getByTestId("emoji-tab-smileys")).toHaveTextContent("Смайлы");
+    expect(screen.getByTestId("emoji-tab-smileys")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    const grid = await screen.findByTestId("emoji-grid");
+    const mounted = grid.querySelectorAll("[data-emoji-button]").length;
+    expect(mounted).toBeGreaterThan(0);
+    expect(mounted).toBeLessThan(200);
+
+    await user.click(screen.getByTestId("emoji-tab-nature"));
+    expect(screen.getByTestId("emoji-tab-nature")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByTestId("emoji-tab-smileys")).toHaveAttribute(
+      "aria-selected",
+      "false",
+    );
+  });
+
+  it("reaches the grid with the keyboard and inserts from it", async () => {
+    const user = userEvent.setup();
+    renderComposer(
+      <MessageComposer
+        target={target}
+        placeholder="Message"
+        canSend
+        canAttach
+        uploads={uploads()}
+      />,
+    );
+
+    await user.click(screen.getByTestId("chat-emoji"));
+    await screen.findByTestId("emoji-grid");
+    await user.keyboard("{ArrowDown}");
+    const first = screen.getByTestId("emoji-😀");
+    await waitFor(() => expect(first).toHaveFocus());
+    await user.keyboard("{Enter}");
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("emoji-picker")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("chat-input")).toHaveValue("😀");
   });
 
   it("closes the emoji picker on Escape and on an outside click", async () => {

@@ -63,9 +63,7 @@ export function AppearanceSection() {
                   onClick={() => patch({ preset })}
                   className={cn(
                     "relative block rounded-md border transition-opacity duration-150 hover:opacity-90",
-                    selected
-                      ? "border-accent ring-1 ring-accent/35"
-                      : "border-border",
+                    selected ? "border-accent" : "border-border",
                   )}
                 >
                   <PresetPreview preset={preset} />

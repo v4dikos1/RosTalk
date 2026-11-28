@@ -10,13 +10,19 @@ import (
 )
 
 type Querier interface {
+	AddNYLedger(ctx context.Context, arg AddNYLedgerParams) (int64, error)
+	AddNYPlacement(ctx context.Context, arg AddNYPlacementParams) (int64, error)
+	AddNYSpin(ctx context.Context, arg AddNYSpinParams) (int64, error)
 	AssignUserRole(ctx context.Context, arg AssignUserRoleParams) error
 	ClaimAttachment(ctx context.Context, arg ClaimAttachmentParams) (int64, error)
+	ClaimNYDay(ctx context.Context, arg ClaimNYDayParams) (int64, error)
+	ClearNYLayout(ctx context.Context, arg ClearNYLayoutParams) error
 	ConsumeInvite(ctx context.Context, arg ConsumeInviteParams) (Invite, error)
 	CountAdmins(ctx context.Context) (int64, error)
 	CountChannelMentions(ctx context.Context, arg CountChannelMentionsParams) (int64, error)
 	CountChannels(ctx context.Context) (int64, error)
 	CountDMMentions(ctx context.Context, arg CountDMMentionsParams) (int64, error)
+	CountNYWateredDays(ctx context.Context, arg CountNYWateredDaysParams) (int64, error)
 	CountRoles(ctx context.Context) (int64, error)
 	CountUnreadChannel(ctx context.Context, arg CountUnreadChannelParams) (int64, error)
 	CountUnreadDM(ctx context.Context, arg CountUnreadDMParams) (int64, error)
@@ -24,6 +30,10 @@ type Querier interface {
 	CountUsersWithAvatar(ctx context.Context, avatarHash string) (int64, error)
 	CreateBan(ctx context.Context, arg CreateBanParams) error
 	CreateInvite(ctx context.Context, arg CreateInviteParams) error
+	CreditNYChatDay(ctx context.Context, arg CreditNYChatDayParams) (int64, error)
+	CreditNYFlakes(ctx context.Context, arg CreditNYFlakesParams) (int64, error)
+	CreditNYVoiceDay(ctx context.Context, arg CreditNYVoiceDayParams) (int64, error)
+	CreditNYWater(ctx context.Context, arg CreditNYWaterParams) (int64, error)
 	DeleteAttachment(ctx context.Context, id int64) error
 	DeleteAttachmentRow(ctx context.Context, id int64) error
 	DeleteBanByIP(ctx context.Context, ip sql.NullString) error
@@ -35,9 +45,12 @@ type Querier interface {
 	DeleteInvite(ctx context.Context, tokenHash []byte) error
 	DeleteMentions(ctx context.Context, messageID int64) error
 	DeleteMessage(ctx context.Context, id int64) error
+	DeleteNYSeason(ctx context.Context, season string) (int64, error)
 	DeleteReadMarkersForChannel(ctx context.Context, channelID int64) error
 	DeleteRole(ctx context.Context, id int64) error
 	DeleteUserRoles(ctx context.Context, userID int64) error
+	EnrollNYPlayer(ctx context.Context, arg EnrollNYPlayerParams) (int64, error)
+	EnsureNYDay(ctx context.Context, arg EnsureNYDayParams) (int64, error)
 	FindUserByNickname(ctx context.Context, nickname string) (User, error)
 	GetActiveBanByIP(ctx context.Context, arg GetActiveBanByIPParams) (Ban, error)
 	GetActiveBanByPublicKey(ctx context.Context, arg GetActiveBanByPublicKeyParams) (Ban, error)
@@ -48,12 +61,18 @@ type Querier interface {
 	GetInviteByID(ctx context.Context, id int64) (Invite, error)
 	GetMessage(ctx context.Context, id int64) (Message, error)
 	GetMessageView(ctx context.Context, id int64) (GetMessageViewRow, error)
+	GetNYDay(ctx context.Context, arg GetNYDayParams) (NyDay, error)
+	GetNYPlayer(ctx context.Context, arg GetNYPlayerParams) (NyPlayer, error)
+	GetNYSeason(ctx context.Context, season string) (string, error)
+	GetNYSpin(ctx context.Context, arg GetNYSpinParams) (NySpin, error)
 	GetReadMarker(ctx context.Context, arg GetReadMarkerParams) (ReadMarker, error)
 	GetRole(ctx context.Context, id int64) (Role, error)
 	GetRoleByName(ctx context.Context, name string) (Role, error)
 	GetSetting(ctx context.Context, key string) (string, error)
 	GetUserByID(ctx context.Context, id int64) (User, error)
 	GetUserByPublicKey(ctx context.Context, publicKey []byte) (User, error)
+	HasNYItem(ctx context.Context, arg HasNYItemParams) (int64, error)
+	IncrementNYInventory(ctx context.Context, arg IncrementNYInventoryParams) (int64, error)
 	InsertApiToken(ctx context.Context, arg InsertApiTokenParams) (ApiToken, error)
 	InsertAttachment(ctx context.Context, arg InsertAttachmentParams) (Attachment, error)
 	InsertAuditEntry(ctx context.Context, arg InsertAuditEntryParams) (AuditLog, error)
@@ -62,6 +81,7 @@ type Querier interface {
 	// Stage 4.1 chat storage. Cursors are message ids: history returns ids lower
 	// than the cursor, newest first, and the caller reverses the page.
 	InsertMessage(ctx context.Context, arg InsertMessageParams) (Message, error)
+	InsertNYSeason(ctx context.Context, arg InsertNYSeasonParams) (int64, error)
 	InsertRole(ctx context.Context, arg InsertRoleParams) (Role, error)
 	ListApiTokens(ctx context.Context) ([]ApiToken, error)
 	ListAuditEntries(ctx context.Context, arg ListAuditEntriesParams) ([]AuditLog, error)
@@ -90,11 +110,18 @@ type Querier interface {
 	ListMessageAttachmentFiles(ctx context.Context, messageID sql.NullInt64) ([]ListMessageAttachmentFilesRow, error)
 	ListMessageAttachments(ctx context.Context, messageID sql.NullInt64) ([]Attachment, error)
 	ListMessageMentions(ctx context.Context, messageID int64) ([]int64, error)
+	ListNYDays(ctx context.Context, arg ListNYDaysParams) ([]ListNYDaysRow, error)
+	ListNYInventory(ctx context.Context, arg ListNYInventoryParams) ([]ListNYInventoryRow, error)
+	ListNYLayout(ctx context.Context, arg ListNYLayoutParams) ([]ListNYLayoutRow, error)
+	ListNYLedger(ctx context.Context, arg ListNYLedgerParams) ([]ListNYLedgerRow, error)
 	ListRoles(ctx context.Context) ([]Role, error)
 	ListSettings(ctx context.Context) ([]ListSettingsRow, error)
 	ListUserRoles(ctx context.Context) ([]ListUserRolesRow, error)
 	ListUserRolesOfUser(ctx context.Context, userID int64) ([]int64, error)
 	ListUsers(ctx context.Context) ([]User, error)
+	LockNYPlayer(ctx context.Context, arg LockNYPlayerParams) (int64, error)
+	LockNYSeason(ctx context.Context, season string) (int64, error)
+	MarkNYChatReward(ctx context.Context, arg MarkNYChatRewardParams) (int64, error)
 	MaxChannelMessageID(ctx context.Context, channelID sql.NullInt64) (int64, error)
 	MaxDMMessageID(ctx context.Context, arg MaxDMMessageIDParams) (int64, error)
 	RevokeApiToken(ctx context.Context, arg RevokeApiTokenParams) error
@@ -104,17 +131,21 @@ type Querier interface {
 	SetRolePosition(ctx context.Context, arg SetRolePositionParams) error
 	SetUserAdmin(ctx context.Context, publicKey []byte) (User, error)
 	SetUserAvatar(ctx context.Context, arg SetUserAvatarParams) error
+	SpendNYFlakes(ctx context.Context, arg SpendNYFlakesParams) (int64, error)
+	SpendNYWater(ctx context.Context, arg SpendNYWaterParams) (int64, error)
 	SumAttachmentBytes(ctx context.Context) (int64, error)
 	TouchApiToken(ctx context.Context, arg TouchApiTokenParams) error
 	UnassignUserRole(ctx context.Context, arg UnassignUserRoleParams) error
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (Channel, error)
 	UpdateMessageBody(ctx context.Context, arg UpdateMessageBodyParams) error
+	UpdateNYLayout(ctx context.Context, arg UpdateNYLayoutParams) (int64, error)
 	UpdateRole(ctx context.Context, arg UpdateRoleParams) (Role, error)
 	UpdateUserNickname(ctx context.Context, arg UpdateUserNicknameParams) error
 	UpsertChannelOverride(ctx context.Context, arg UpsertChannelOverrideParams) error
 	UpsertReadMarker(ctx context.Context, arg UpsertReadMarkerParams) error
 	UpsertSetting(ctx context.Context, arg UpsertSettingParams) error
 	UpsertUser(ctx context.Context, arg UpsertUserParams) (User, error)
+	WaterNYDay(ctx context.Context, arg WaterNYDayParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)

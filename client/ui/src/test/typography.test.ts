@@ -27,11 +27,21 @@ const files = sourceFiles(root).filter(
   (file) => !/\.test\.tsx?$/.test(file), // Tests quote what they assert about.
 );
 
+/**
+ * Generated data is not hand-written UI: emoji keywords legitimately contain
+ * words such as "uppercase" (the CLDR annotation of 🔠), and scanning them
+ * would turn the typography guard into a false positive.
+ */
+const isGenerated = (relative: string) => relative === "lib/emojiData.ts";
+
 describe("typography", () => {
   it("uses only the seven-step scale, with 8 px allowed for initials", () => {
     const unexpected: string[] = [];
     for (const file of files) {
       const relative = path.relative(root, file).replaceAll("\\", "/");
+      if (isGenerated(relative)) {
+        continue;
+      }
       readFileSync(file, "utf8")
         .split("\n")
         .forEach((line, index) => {
@@ -53,6 +63,9 @@ describe("typography", () => {
     const offenders: string[] = [];
     for (const file of files) {
       const relative = path.relative(root, file).replaceAll("\\", "/");
+      if (isGenerated(relative)) {
+        continue;
+      }
       readFileSync(file, "utf8")
         .split("\n")
         .forEach((line, index) => {
@@ -68,6 +81,9 @@ describe("typography", () => {
     const offenders: string[] = [];
     for (const file of files) {
       const relative = path.relative(root, file).replaceAll("\\", "/");
+      if (isGenerated(relative)) {
+        continue;
+      }
       if (relative === "components/chat/MessageList.tsx") {
         continue;
       }

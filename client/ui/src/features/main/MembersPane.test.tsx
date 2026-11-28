@@ -1,10 +1,17 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { i18n } from "@/i18n";
 import { fixtureState } from "@/mock/fixtures";
 import { useChatStore } from "@/store/chatStore";
+import { coreApi } from "@/core";
+import { fixtureSettings } from "@/mock/fixtures";
+import { PluginHost } from "@/plugins/new-year/PluginHost";
+import { write } from "@/plugins/new-year/support";
+import { useAppStore } from "@/store/appStore";
+import { useCoreStore } from "@/store/coreStore";
+import { useSettingsStore } from "@/store/settingsStore";
 
 import { MembersPane } from "./MembersPane";
 
@@ -43,9 +50,36 @@ function renderPane(options: {
 describe("MembersPane", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("ru");
+    useSettingsStore.setState({ settings: fixtureSettings, persistedNewYear: "absent" });
     useChatStore.setState({
       proxy: { baseUrl: "http://127.0.0.1:7777", token: "test-token" },
     });
+  });
+
+  it("returns focus to the member after closing their tree", async () => {
+    await i18n.changeLanguage("en");
+    const proxy = { baseUrl: "http://127.0.0.1:7788", token: "fixture" };
+    const state = structuredClone(fixtureState);
+    state.server!.id = "focus-server";
+    const self = state.users.find((user) => user.id === state.selfUserId)!;
+    write(`rostalk.newYear.open:${state.server!.id}:${self.id}:${self.connectedAtUnixMs}:${proxy.baseUrl}`, "1");
+    useCoreStore.setState({ state });
+    useChatStore.setState({ proxy });
+    useSettingsStore.setState({ settings: { ...fixtureSettings, plugins: { newYear: "enabled" } }, persistedNewYear: "enabled" });
+    useAppStore.setState({ newYearTarget: null });
+    vi.spyOn(coreApi, "chatProxy").mockResolvedValue(proxy);
+    const fetch = vi.spyOn(window, "fetch").mockImplementation(async (url) => new Response(JSON.stringify(String(url).endsWith("/support") ? { apiVersion: 1, season: "2026-12", phase: "active" } : { tree: { growthDays: 1, background: "dusk", placements: [] } })));
+    const view = renderPane({ channelId: 3, serverId: state.server!.id, users: state.users });
+    const host = render(<PluginHost />);
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    const row = screen.getByTestId("member-pane-2");
+    await userEvent.click(row);
+    await userEvent.click(screen.getByRole("button", { name: "Open tree" }));
+    await screen.findByTestId("new-year-game");
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("new-year-game")).toBeNull());
+    await waitFor(() => expect(row).toHaveFocus());
+    host.unmount(); view.unmount();
   });
 
   it("counts the viewers of a streamer", () => {

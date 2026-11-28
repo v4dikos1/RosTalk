@@ -1,9 +1,11 @@
 import { coreApi } from "@/core";
 import type { CoreEvent, MessageView } from "@/core/api";
+import { playMentionSound } from "@/core/mentionSound";
 import { i18n } from "@/i18n";
 import { messageConversationKey } from "@/lib/chat";
 import { useChatStore } from "@/store/chatStore";
 import { useCoreStore } from "@/store/coreStore";
+import { useSettingsStore } from "@/store/settingsStore";
 
 /**
  * Chat mirror: forwards stored messages into the per-conversation cache,
@@ -132,6 +134,21 @@ function onIncoming(message: MessageView, selfUserId: number): void {
 
   const direct = message.channelId === 0;
   const mentioned = message.mentionUserIds.includes(selfUserId);
+  // A mention gets its own embedded chime, even while the conversation is open
+  // and focused. It follows the saved cue switches, like the core cue does:
+  // a missing settings object means the defaults, which keep sounds on, and a
+  // user who disabled sounds — or only the message group — hears nothing. Own
+  // messages never ring, even if the server echoed the author's own tag back.
+  // History pages never reach this mirror, so loading them cannot ring either.
+  const sounds = useSettingsStore.getState().settings?.voice.sounds;
+  if (
+    mentioned &&
+    message.senderId !== selfUserId &&
+    (sounds?.enabled ?? true) &&
+    (sounds?.messages ?? true)
+  ) {
+    playMentionSound(Date.now(), sounds?.volume ?? 100);
+  }
   if (!direct && !mentioned) {
     return;
   }
@@ -151,9 +168,11 @@ function onIncoming(message: MessageView, selfUserId: number): void {
     preview.length > 140 ? `${preview.slice(0, 139)}…` : preview
   }`;
 
-  // One cue for both a direct message and a mention; the engine applies the
-  // saved switches and volume. The system notification stays silent.
-  void coreApi.playVoiceSound("directMessage").catch(() => {});
+  // One cue per message: a mention already used the UI chime, so only a plain
+  // direct message asks the core engine for its cue.
+  if (!mentioned) {
+    void coreApi.playVoiceSound("directMessage").catch(() => {});
+  }
 
   if (
     typeof Notification !== "undefined" &&

@@ -231,3 +231,71 @@ picture uploaded by two users is stored once. Changes are rate limited (five
 quick changes, then one every 20 s) and each change is written to the audit log
 (`avatar.update`, `avatar.clear`). Historical `member.avatar_reset` entries
 written before ADR 0035 stay readable; new ones are never written.
+
+## New Year event
+
+Use the session bearer issued in `Welcome` for every route under
+`/api/v1/events/new-year`. The Rust loopback proxy forwards these exact
+method and path pairs under `/events/new-year`. Send GETs with an empty body
+and omit query strings. Send PUTs and POSTs with one `application/json`
+object. Successful responses are JSON with status 200 and
+`Cache-Control: no-store`.
+
+| Method and suffix | Request | Success |
+|---|---|---|
+| GET `/support` | Empty | `apiVersion: 1`, `season: "2026-12"`, current `phase` |
+| GET `/me` | Empty | State, with empty progress when the caller has yet to enroll |
+| PUT `/me/enrollment` | `{}` | State after idempotent enrollment |
+| POST `/me/claim` | `{"day":"2026-12-01"}` | `{itemId, state}` after claiming one water and one catalog item |
+| POST `/me/water` | `{"day":"2026-12-01"}` | State after spending one water and adding one growth day |
+| POST `/me/spins` | `{"requestId":"f2d19398-48d3-4c89-a3a6-eb60eda2eeb2"}` | `{receipt, state}`, with the item, duplicate flag, refund and cost in the receipt |
+| PUT `/me/layout` | `{version, background, placements}` | State after replacing the layout |
+| GET `/trees/{id}` | Canonical positive decimal user ID up to signed 64-bit max | `{tree: {growthDays, background, placements}}` or `{tree: null}` |
+
+The season is active from local midnight December 1 until local midnight
+January 1, then in read-only gallery mode through January 7. Before the
+season, support and state report `upcoming`. After the gallery, support
+reports `closed`. Claims and water use the current server day and allow one
+of each per day. The state includes `zone`, `day`, `nextDayAt`, balances,
+growth, claims, watered days, inventory, layout, unlocked backgrounds and
+the latest 20 ledger entries. Times are UTC RFC3339 and day keys are local
+ISO dates.
+
+Enrollment enables activity accrual even when the client closes or disables
+the plugin. Qualifying five-minute voice checkpoints earn 2 flakes up to
+24 per day. Accepted channel text earns 1 flake at least 60 seconds apart
+up to 6 per day. Roulette costs 6 flakes, with a 2-flake refund if the item
+is already owned. Use a lowercase canonical UUID v4 for each deliberate spin.
+A committed ID returns its original receipt and fresh state on replay,
+including in the gallery. Support and tree reads leave participation unchanged.
+
+Send at most 20 placements in back-to-front order, within owned quantities.
+`dusk` is always available and `aurora` unlocks at eight watered days. Reset
+with an empty placements array and `dusk`. Submit the current layout version.
+An identical replay returns the current state. Each placement uses integer
+`x`, `y`, `scale`, and `rotation`. The crown accepts `140 <= y <= 930`
+and `abs(x - 500) <= floor(0.42 * y) - 35`, with `scale` from 60 to 140
+percent and `rotation` from -45 to 45 degrees. Tree viewing is available in
+the active season and gallery for self and visible online members.
+
+| Status | Event codes |
+|---|---|
+| 400 | `invalid_request`, `invalid_layout` |
+| 401 | `unauthenticated` for a missing, expired or revoked session |
+| 403 | `permission_denied` for a role-only token |
+| 404 | `not_found` for an unavailable route or an unknown, offline or hidden peer |
+| 409 | `event_closed`, `not_enrolled`, `day_changed`, `already_claimed`, `already_watered`, `no_water`, `insufficient_flakes`, `layout_conflict`, `not_owned`, `background_locked` |
+| 413 | `file_too_large` above 256 bytes, or 4096 for layout |
+| 415 | `unsupported_media_type` for a mutation with a different media type |
+| 429 | `rate_limited` after a burst of 8 mutations per user, refilling one per second. `Retry-After: 1`. |
+| 500 | `internal` |
+
+Set `ROSTALK_NEW_YEAR_TZ` to an IANA timezone before the season is first
+initialized. The server uses a valid `TZ` from its process environment when
+the event setting is empty, then UTC. In Docker these are the environment
+variables inside the server container. Startup logs the effective zone and
+the database preserves it for the season. An invalid explicit event zone
+makes the event unavailable while chat continues. Set
+`ROSTALK_NEW_YEAR_DISABLED=true` to leave the event routes and activity hooks
+out. Season records expire at local midnight February 1. An enabled server
+purges them at startup or at the expiry boundary.

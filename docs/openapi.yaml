@@ -9,6 +9,10 @@ info:
     or with `POST /api/v1/tokens`; the plaintext is returned once and only its
     SHA-256 hash is stored.
 
+    The New Year event uses the user session bearer issued in Welcome. Its
+    routes accept only the listed method and path pairs, without a query.
+    All event success responses are JSON with Cache-Control: no-store.
+
     Errors are JSON objects with a stable `code`. `401` means the token is
     missing, unknown, expired or revoked; `403` means the token role may not do
     this; `404` hides objects the token cannot see.
@@ -43,6 +47,20 @@ components:
                 - invalid_request
                 - rejected
                 - internal
+                - event_closed
+                - not_enrolled
+                - day_changed
+                - already_claimed
+                - already_watered
+                - no_water
+                - insufficient_flakes
+                - layout_conflict
+                - not_owned
+                - background_locked
+                - invalid_layout
+                - rate_limited
+                - file_too_large
+                - unsupported_media_type
             message:
               type: string
     User:
@@ -124,6 +142,179 @@ components:
         token:
           type: string
           description: Plaintext token, present only in the 201 reply to POST /tokens.
+    NewYearSupport:
+      type: object
+      required: [apiVersion, season, phase]
+      properties:
+        apiVersion: { type: integer, enum: [1] }
+        season: { type: string, example: '2026-12' }
+        phase:
+          type: string
+          enum: [upcoming, active, gallery, closed]
+    NewYearPlacement:
+      type: object
+      additionalProperties: false
+      required: [itemId, x, y, scale, rotation]
+      description: |
+        Crown coordinates run 0..1000 from the top left. The server accepts
+        `140 <= y <= 930` and `abs(x - 500) <= floor(0.42 * y) - 35`, so
+        (523,140) is accepted while (524,140) and (500,139) are not.
+      properties:
+        itemId: { type: string }
+        x: { type: integer, minimum: 0, maximum: 1000 }
+        y: { type: integer, minimum: 140, maximum: 930 }
+        scale: { type: integer, minimum: 60, maximum: 140, description: Percent. }
+        rotation: { type: integer, minimum: -45, maximum: 45, description: Degrees. }
+    NewYearLayout:
+      type: object
+      additionalProperties: false
+      required: [version, background, placements]
+      properties:
+        version: { type: integer, minimum: 0 }
+        background: { type: string, enum: [dusk, aurora] }
+        placements:
+          type: array
+          maxItems: 20
+          description: Back to front.
+          items: { $ref: '#/components/schemas/NewYearPlacement' }
+    NewYearState:
+      type: object
+      required: [season, phase, zone, day, nextDayAt, enrolled, water, flakes, claims, wateredDays, growthDays, inventory, layout, unlockedBackgrounds, history]
+      example:
+        season: '2026-12'
+        phase: active
+        zone: UTC
+        day: '2026-12-01'
+        nextDayAt: '2026-12-02T00:00:00Z'
+        enrolled: true
+        water: 0
+        flakes: 2
+        claims: [{ day: '2026-12-01', itemId: ball-red }]
+        wateredDays: ['2026-12-01']
+        growthDays: 1
+        inventory: [{ itemId: ball-red, qty: 1 }]
+        layout: { version: 0, background: dusk, placements: [] }
+        unlockedBackgrounds: [dusk]
+        history: [{ kind: voice, delta: 2, at: '2026-12-01T12:05:00Z' }]
+      properties:
+        season: { type: string }
+        phase: { type: string, enum: [upcoming, active, gallery] }
+        zone: { type: string, description: IANA zone of the season calendar. }
+        day: { type: string, format: date, description: Current season-local day. }
+        nextDayAt: { type: string, format: date-time, description: UTC instant of the next server midnight. }
+        enrolled: { type: boolean }
+        water: { type: integer }
+        flakes: { type: integer }
+        claims:
+          type: array
+          description: Ascending by day.
+          items:
+            type: object
+            required: [day, itemId]
+            properties:
+              day: { type: string, format: date }
+              itemId: { type: string }
+        wateredDays:
+          type: array
+          items: { type: string, format: date }
+        growthDays: { type: integer, minimum: 0, maximum: 31 }
+        inventory:
+          type: array
+          description: Ascending by item id.
+          items:
+            type: object
+            required: [itemId, qty]
+            properties:
+              itemId: { type: string }
+              qty: { type: integer, minimum: 1 }
+        layout: { $ref: '#/components/schemas/NewYearLayout' }
+        unlockedBackgrounds:
+          type: array
+          items: { type: string, enum: [dusk, aurora] }
+        history:
+          type: array
+          maxItems: 20
+          description: Newest first, signed changes only.
+          items:
+            type: object
+            required: [kind, delta, at]
+            properties:
+              kind: { type: string, enum: [chat, voice, spin, duplicate] }
+              delta: { type: integer }
+              at: { type: string, format: date-time }
+    NewYearReceipt:
+      type: object
+      required: [requestId, itemId, duplicate, refund, cost]
+      properties:
+        requestId: { type: string }
+        itemId: { type: string }
+        duplicate: { type: boolean }
+        refund: { type: integer, description: 2 for a duplicate, otherwise 0. }
+        cost: { type: integer, enum: [6] }
+    NewYearClaimReply:
+      type: object
+      required: [itemId, state]
+      properties:
+        itemId: { type: string, example: ball-red }
+        state: { $ref: '#/components/schemas/NewYearState' }
+    NewYearSpinReply:
+      type: object
+      required: [receipt, state]
+      properties:
+        receipt: { $ref: '#/components/schemas/NewYearReceipt' }
+        state: { $ref: '#/components/schemas/NewYearState' }
+    NewYearTreeReply:
+      type: object
+      required: [tree]
+      properties:
+        tree:
+          type: object
+          nullable: true
+          required: [growthDays, background, placements]
+          properties:
+            growthDays: { type: integer, minimum: 0, maximum: 31 }
+            background: { type: string, enum: [dusk, aurora] }
+            placements:
+              type: array
+              maxItems: 20
+              items: { $ref: '#/components/schemas/NewYearPlacement' }
+      example: { tree: { growthDays: 1, background: dusk, placements: [] } }
+    NewYearCatalog:
+      type: object
+      description: |
+        Contract example of catalog v1. The server owns the weights and the
+        price; a different catalog or price needs a new negotiated major
+        version. A roll in [0,99] selects the rarity by cumulative weight and
+        then one item of that rarity uniformly. An item the player already
+        owns converts the spin to `duplicateRefund` snowflakes.
+      example: {"rarities":[{"name":"common","weight":60,"items":["ball-red","ball-gold","ball-blue","candy-cane","pine-cone","snowflake"]},{"name":"rare","weight":25,"items":["ball-glass-house","bell-gold","ribbon-bow","icicle-silver"]},{"name":"epic","weight":12,"items":["ball-aurora","snow-globe","gingerbread-house"]},{"name":"legendary","weight":3,"items":["star-topper","deer-gold","clock-midnight"]}],"spinCost":6,"duplicateRefund":2}
+    ChatAttachment:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        fileName: { type: string }
+        contentType: { type: string }
+        sizeBytes: { type: integer, format: int64 }
+        width: { type: integer, format: int32 }
+        height: { type: integer, format: int32 }
+        image: { type: boolean }
+    ChatMessage:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        channelId: { type: integer, format: int64, description: 0 for a direct message. }
+        senderId: { type: integer, format: int64 }
+        recipientId: { type: integer, format: int64, description: The other participant of a direct message, 0 in a channel. }
+        senderNickname: { type: string }
+        body: { type: string }
+        createdAtUnixMs: { type: integer, format: int64 }
+        editedAtUnixMs: { type: integer, format: int64 }
+        attachments:
+          type: array
+          items: { $ref: '#/components/schemas/ChatAttachment' }
+        mentionUserIds:
+          type: array
+          items: { type: integer, format: int64 }
   responses:
     Unauthorized:
       description: Missing, unknown, expired or revoked token.
@@ -153,33 +344,42 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
-    ChatAttachment:
-      type: object
-      properties:
-        id: { type: integer, format: int64 }
-        fileName: { type: string }
-        contentType: { type: string }
-        sizeBytes: { type: integer, format: int64 }
-        width: { type: integer, format: int32 }
-        height: { type: integer, format: int32 }
-        image: { type: boolean }
-    ChatMessage:
-      type: object
-      properties:
-        id: { type: integer, format: int64 }
-        channelId: { type: integer, format: int64, description: 0 for a direct message. }
-        senderId: { type: integer, format: int64 }
-        recipientId: { type: integer, format: int64, description: The other participant of a direct message, 0 in a channel. }
-        senderNickname: { type: string }
-        body: { type: string }
-        createdAtUnixMs: { type: integer, format: int64 }
-        editedAtUnixMs: { type: integer, format: int64 }
-        attachments:
-          type: array
-          items: { $ref: '#/components/schemas/ChatAttachment' }
-        mentionUserIds:
-          type: array
-          items: { type: integer, format: int64 }
+    NewYearConflict:
+      description: |
+        The rule refused the request. Codes: `event_closed`, `not_enrolled`,
+        `day_changed`, `already_claimed`, `already_watered`, `no_water`,
+        `insufficient_flakes`, `layout_conflict`, `not_owned`, `background_locked`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NewYearTooLarge:
+      description: The body exceeds 256 bytes (4096 for the layout), `file_too_large`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NewYearUnsupportedMedia:
+      description: The body is not `application/json`, `unsupported_media_type`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NewYearRateLimited:
+      description: More than the burst of 8 mutations, `rate_limited`; retry after one second.
+      headers:
+        Retry-After:
+          schema: { type: integer, enum: [1] }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NewYearBadRequest:
+      description: Invalid JSON or field value, `invalid_request`; layout bounds or count violation, `invalid_layout`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NewYearInternal:
+      description: The server could not complete the request, `internal`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
 paths:
   /users:
     get:
@@ -193,7 +393,7 @@ paths:
         - in: query
           name: online
           schema: { type: boolean, default: false }
-          description: `true` returns online users only.
+          description: "`true` returns online users only."
       responses:
         '200':
           description: Users
@@ -592,6 +792,222 @@ paths:
               schema: { type: string, format: binary }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /events/new-year/support:
+    get:
+      summary: Discover the built-in New Year event
+      description: Returns the current phase without enrolling the caller.
+      responses:
+        '200':
+          description: Success
+          headers:
+            Cache-Control: &newYearNoStore
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewYearSupport' }
+              example: { apiVersion: 1, season: '2026-12', phase: active }
+        '400': { $ref: '#/components/responses/NewYearBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /events/new-year/me:
+    get:
+      summary: Read the caller's event state
+      description: Available upcoming, active and in the gallery. An unenrolled caller receives zero state.
+      responses:
+        '200':
+          description: Success
+          headers:
+            Cache-Control: *newYearNoStore
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewYearState' }
+        '400': { $ref: '#/components/responses/NewYearBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/NewYearConflict' }
+        '500': { $ref: '#/components/responses/NewYearInternal' }
+  /events/new-year/me/enrollment:
+    put:
+      summary: Enroll in the active event
+      description: The first active request enrolls the caller. A replay keeps the original enrollment date and state.
+      requestBody:
+        required: true
+        description: 256 bytes maximum.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: Success
+          headers:
+            Cache-Control: *newYearNoStore
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewYearState' }
+        '400': { $ref: '#/components/responses/NewYearBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/NewYearConflict' }
+        '413': { $ref: '#/components/responses/NewYearTooLarge' }
+        '415': { $ref: '#/components/responses/NewYearUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/NewYearRateLimited' }
+        '500': { $ref: '#/components/responses/NewYearInternal' }
+  /events/new-year/me/claim:
+    post:
+      summary: Claim the current day's gift
+      description: The expected day must equal the current season-local day. Awards one water and one catalog item.
+      requestBody:
+        required: true
+        description: 256 bytes maximum.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [day]
+              properties:
+                day: { type: string, format: date, example: '2026-12-01' }
+      responses:
+        '200':
+          description: Success
+          headers:
+            Cache-Control: *newYearNoStore
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewYearClaimReply' }
+        '400': { $ref: '#/components/responses/NewYearBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/NewYearConflict' }
+        '413': { $ref: '#/components/responses/NewYearTooLarge' }
+        '415': { $ref: '#/components/responses/NewYearUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/NewYearRateLimited' }
+        '500': { $ref: '#/components/responses/NewYearInternal' }
+  /events/new-year/me/water:
+    post:
+      summary: Water the tree for the current day
+      description: The expected day must equal the current season-local day. Costs one water and adds one growth day.
+      requestBody:
+        required: true
+        description: 256 bytes maximum.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [day]
+              properties:
+                day: { type: string, format: date, example: '2026-12-01' }
+      responses:
+        '200':
+          description: Success
+          headers:
+            Cache-Control: *newYearNoStore
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewYearState' }
+        '400': { $ref: '#/components/responses/NewYearBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/NewYearConflict' }
+        '413': { $ref: '#/components/responses/NewYearTooLarge' }
+        '415': { $ref: '#/components/responses/NewYearUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/NewYearRateLimited' }
+        '500': { $ref: '#/components/responses/NewYearInternal' }
+  /events/new-year/me/spins:
+    post:
+      summary: Open the ornament roulette
+      description: Costs 6 flakes. A successful request ID can be replayed during the event and gallery for the original receipt and fresh state.
+      requestBody:
+        required: true
+        description: 256 bytes maximum.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requestId]
+              properties:
+                requestId:
+                  type: string
+                  format: uuid
+                  pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      responses:
+        '200':
+          description: Success
+          headers:
+            Cache-Control: *newYearNoStore
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewYearSpinReply' }
+        '400': { $ref: '#/components/responses/NewYearBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/NewYearConflict' }
+        '413': { $ref: '#/components/responses/NewYearTooLarge' }
+        '415': { $ref: '#/components/responses/NewYearUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/NewYearRateLimited' }
+        '500': { $ref: '#/components/responses/NewYearInternal' }
+  /events/new-year/me/layout:
+    put:
+      summary: Replace the caller's tree layout
+      description: A changed layout increments its version. A stale changed layout conflicts. An identical replay returns the current state.
+      requestBody:
+        required: true
+        description: 4096 bytes maximum.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewYearLayout'
+      responses:
+        '200':
+          description: Success
+          headers:
+            Cache-Control: *newYearNoStore
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewYearState' }
+        '400': { $ref: '#/components/responses/NewYearBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/NewYearConflict' }
+        '413': { $ref: '#/components/responses/NewYearTooLarge' }
+        '415': { $ref: '#/components/responses/NewYearUnsupportedMedia' }
+        '429': { $ref: '#/components/responses/NewYearRateLimited' }
+        '500': { $ref: '#/components/responses/NewYearInternal' }
+  /events/new-year/trees/{id}:
+    get:
+      summary: Read a visible participant's tree
+      description: Available during the event and gallery. The target must be the caller or an online member visible to the caller. An unenrolled target has a null tree.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Canonical positive decimal user ID with no leading zero or escapes.
+          schema: { type: integer, format: int64, minimum: 1, maximum: 9223372036854775807 }
+      responses:
+        '200':
+          description: Success
+          headers:
+            Cache-Control: *newYearNoStore
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewYearTreeReply' }
+        '400': { $ref: '#/components/responses/NewYearBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/NewYearConflict' }
+        '500': { $ref: '#/components/responses/NewYearInternal' }
 
   /chat/export:
     get:

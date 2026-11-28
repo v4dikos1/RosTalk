@@ -19,6 +19,7 @@ export type SettingsSection =
   | "identity"
   | "diagnostics"
   | "updates"
+  | "plugins"
   | "about";
 
 export interface UserMenuTarget {
@@ -33,6 +34,9 @@ export interface MenuAnchor {
 }
 
 interface AppState {
+  newYearTarget: { kind: "self" } | { kind: "peer"; userId: number; nickname: string } | null;
+  openNewYear: (target: { kind: "self" } | { kind: "peer"; userId: number; nickname: string }) => void;
+  closeNewYear: () => void;
   view: MainView;
   /** Selected channel in the tree; UI-only, not part of the core state. */
   selectedChannelId: number | null;
@@ -88,6 +92,9 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>()((set) => ({
+  newYearTarget: null,
+  openNewYear: (newYearTarget) => set({ newYearTarget }),
+  closeNewYear: () => set({ newYearTarget: null }),
   view: "chat",
   selectedChannelId: null,
   dmPeerId: null,

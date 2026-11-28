@@ -586,6 +586,12 @@ export interface VoiceSettings {
   hotkeys: HotkeyBinding[];
 }
 
+export type NewYearPluginState = "absent" | "enabled" | "disabled";
+
+export interface PluginSettings {
+  newYear: NewYearPluginState;
+}
+
 /** Settings owned and persisted by the core (requirement 8). */
 export interface ClientSettings {
   version: number;
@@ -613,6 +619,7 @@ export interface ClientSettings {
   selfDeafened: boolean;
   appearance: AppearanceSettings;
   diagnostics: DiagnosticsSettings;
+  plugins: PluginSettings;
   /** Update source: https URL to latest.json or a local directory. */
   updateSource: string | null;
   /** Start at Windows logon, minimized to the tray. */

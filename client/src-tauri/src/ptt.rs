@@ -344,6 +344,62 @@ fn plan_toggle(accelerator: Option<&str>, background: bool) -> TogglePlan {
     }
 }
 
+/// Where one action actually works after the install plan is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionScope {
+    /// The Raw Input registration delivers this action in the background.
+    Global,
+    /// Only the focused RosTalk window handles this action.
+    WindowOnly,
+    /// Neither the background registration nor the window has a working binding.
+    Unavailable,
+}
+
+impl ActionScope {
+    fn label(self) -> &'static str {
+        match self {
+            ActionScope::Global => "global",
+            ActionScope::WindowOnly => "window-only",
+            ActionScope::Unavailable => "unavailable",
+        }
+    }
+}
+
+impl TogglePlan {
+    fn scope(self) -> ActionScope {
+        match self {
+            TogglePlan::Global(_) => ActionScope::Global,
+            // A combination without the opt-in, a side-button pair or a name
+            // the router cannot parse is still matched by the window handler.
+            TogglePlan::LocalOnly => ActionScope::WindowOnly,
+            TogglePlan::Unbound => ActionScope::Unavailable,
+        }
+    }
+}
+
+/// Effective scope of every global action in one plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActionScopes {
+    push_to_talk: ActionScope,
+    toggle_mute: ActionScope,
+    toggle_deafen: ActionScope,
+}
+
+/// Where each action works, for the install log and status. Pure: it only
+/// reads the plan and makes no Win32 call.
+fn action_scopes(plan: &Plan) -> ActionScopes {
+    ActionScopes {
+        // Push-to-talk has no window fallback: an invalid binding is dead.
+        push_to_talk: if plan.ptt.is_ok() {
+            ActionScope::Global
+        } else {
+            ActionScope::Unavailable
+        },
+        toggle_mute: plan.mute.scope(),
+        toggle_deafen: plan.deafen.scope(),
+    }
+}
+
 /// Parses the push-to-talk accelerator.
 ///
 /// A single keyboard key keeps the side buttons as an additional binding, as
@@ -442,6 +498,8 @@ fn migrate_key(name: &str) -> String {
 #[derive(Debug, Clone)]
 struct Plan {
     ptt: Result<PttBinding, String>,
+    mute: TogglePlan,
+    deafen: TogglePlan,
     toggles: Vec<(Trigger, GlobalAction)>,
     capture_keyboard: bool,
 }
@@ -450,11 +508,6 @@ fn build_plan(config: &GlobalConfig) -> Plan {
     let background = config.background_hotkeys;
     let mute = plan_toggle(config.toggle_mute.as_deref(), background);
     let deafen = plan_toggle(config.toggle_deafen.as_deref(), background);
-    for (plan, name) in [(mute, "mute"), (deafen, "deafen")] {
-        if plan == TogglePlan::LocalOnly {
-            log::info!("{name} stays window-local: enable background combinations or use a single key/button");
-        }
-    }
     // Only an unmodified explicit mouse toggle reclaims a side button from the
     // implicit push-to-talk pair; a modifier chord is a different input.
     let mut claimed = Vec::new();
@@ -495,6 +548,8 @@ fn build_plan(config: &GlobalConfig) -> Plan {
     }) || toggles.iter().any(|(trigger, _)| trigger.modifiers.any());
     Plan {
         ptt,
+        mute,
+        deafen,
         toggles,
         capture_keyboard: key_trigger || modifier_trigger,
     }
@@ -759,11 +814,17 @@ pub fn install_global_input(
         Err(_) => config.push_to_talk.clone().unwrap_or_default(),
     };
     let ptt_error = plan.ptt.as_ref().err().cloned();
+    let scopes = action_scopes(&plan);
 
     if !any_valid {
         let error = ptt_error
             .unwrap_or_else(|| "no global push-to-talk, mute or deafen binding is usable".into());
-        log::warn!("global input is not installed: {error}");
+        log::warn!(
+            "global input is not installed: {error} (push-to-talk {}, mute {}, deafen {})",
+            scopes.push_to_talk.label(),
+            scopes.toggle_mute.label(),
+            scopes.toggle_deafen.label()
+        );
         return InstallResult {
             ptt: PttStatus {
                 hook: PttHookState::Unavailable,
@@ -790,9 +851,9 @@ pub fn install_global_input(
         Ok(hook) => {
             log::info!(
                 "global input installed: push-to-talk {} ({ptt_binding}), mute {}, deafen {}, keyboard captured: {}",
-                if ptt_ok { "on" } else { "unavailable" },
-                if mute { "on" } else { "off" },
-                if deafen { "on" } else { "off" },
+                scopes.push_to_talk.label(),
+                scopes.toggle_mute.label(),
+                scopes.toggle_deafen.label(),
                 plan.capture_keyboard
             );
             if let Ok(mut slot) = active_hook().lock() {
@@ -992,6 +1053,89 @@ mod tests {
         // The invalid PTT combination must not enable background keyboard
         // capture; only the valid mouse toggles are registered.
         assert!(!plan.capture_keyboard);
+    }
+
+    #[test]
+    fn the_default_mouse_binding_is_global_and_unset_toggles_are_unavailable() {
+        let scopes = action_scopes(&build_plan(&GlobalConfig::default()));
+        assert_eq!(scopes.push_to_talk, ActionScope::Global);
+        assert_eq!(scopes.toggle_mute, ActionScope::Unavailable);
+        assert_eq!(scopes.toggle_deafen, ActionScope::Unavailable);
+    }
+
+    #[test]
+    fn a_single_keyboard_key_is_global_for_push_to_talk_and_a_toggle() {
+        let config = GlobalConfig {
+            push_to_talk: Some("V".to_owned()),
+            toggle_mute: Some("F8".to_owned()),
+            ..GlobalConfig::default()
+        };
+        let scopes = action_scopes(&build_plan(&config));
+        assert_eq!(scopes.push_to_talk, ActionScope::Global);
+        assert_eq!(scopes.toggle_mute, ActionScope::Global);
+        assert_eq!(scopes.toggle_deafen, ActionScope::Unavailable);
+    }
+
+    #[test]
+    fn a_toggle_combination_is_window_only_without_the_opt_in_and_global_with_it() {
+        let config = GlobalConfig {
+            toggle_mute: Some("Ctrl+Shift+M".to_owned()),
+            ..GlobalConfig::default()
+        };
+        let scopes = action_scopes(&build_plan(&config));
+        assert_eq!(scopes.toggle_mute, ActionScope::WindowOnly);
+        // The implicit push-to-talk mouse pair is unaffected.
+        assert_eq!(scopes.push_to_talk, ActionScope::Global);
+
+        let config = GlobalConfig {
+            background_hotkeys: true,
+            ..config
+        };
+        assert_eq!(
+            action_scopes(&build_plan(&config)).toggle_mute,
+            ActionScope::Global
+        );
+    }
+
+    #[test]
+    fn a_push_to_talk_combination_is_unavailable_without_the_opt_in() {
+        let config = GlobalConfig {
+            push_to_talk: Some("Ctrl+Shift+K".to_owned()),
+            ..GlobalConfig::default()
+        };
+        // There is no window fallback for push-to-talk, so an unregistered
+        // combination is unavailable rather than window-local.
+        assert_eq!(
+            action_scopes(&build_plan(&config)).push_to_talk,
+            ActionScope::Unavailable
+        );
+
+        let config = GlobalConfig {
+            background_hotkeys: true,
+            ..config
+        };
+        assert_eq!(
+            action_scopes(&build_plan(&config)).push_to_talk,
+            ActionScope::Global
+        );
+    }
+
+    #[test]
+    fn an_unparsable_toggle_is_window_only() {
+        let config = GlobalConfig {
+            toggle_deafen: Some("Ctrl+Shift+NotAKey".to_owned()),
+            background_hotkeys: true,
+            ..GlobalConfig::default()
+        };
+        assert_eq!(
+            action_scopes(&build_plan(&config)).toggle_deafen,
+            ActionScope::WindowOnly
+        );
+        // The side-button pair is still matched by the window handler.
+        assert_eq!(
+            plan_toggle(Some(PUSH_TO_TALK_BINDING), true).scope(),
+            ActionScope::WindowOnly
+        );
     }
 
     #[test]

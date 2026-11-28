@@ -1,5 +1,5 @@
 import { Copy, Download, Loader2, Pencil, Trash2, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { UserAvatar } from "@/components/common/UserAvatar";
@@ -10,7 +10,12 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { AttachmentView, ChatProxyView, MessageView } from "@/core/api";
+import type {
+  AttachmentView,
+  ChatProxyView,
+  MessageView,
+  UserView,
+} from "@/core/api";
 import {
   attachmentUrl,
   copyImageErrorKey,
@@ -23,7 +28,12 @@ import { Markup } from "@/lib/markup";
 import { roleNameStyle } from "@/lib/roles";
 import { formatClock } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { useAppStore } from "@/store/appStore";
+import { useCoreStore } from "@/store/coreStore";
 import { useSettingsStore } from "@/store/settingsStore";
+
+/** Stable empty list for a not-yet-hydrated core state. */
+const NO_USERS: UserView[] = [];
 
 export interface MessageItemProps {
   message: MessageView;
@@ -60,6 +70,20 @@ export function MessageItem({
 }: MessageItemProps) {
   const { t } = useTranslation();
   const locale = useSettingsStore((store) => store.settings?.locale ?? "ru");
+  const users = useCoreStore((store) => store.state?.users ?? NO_USERS);
+  const author = users.find((user) => user.id === message.senderId) ?? null;
+  // Only a nickname the server recorded as a mention of this message may link
+  // to a user menu; an arbitrary "@word" in the body stays plain text.
+  const mentionMap = useMemo(() => {
+    const confirmed = new Set(message.mentionUserIds);
+    const map = new Map<string, number>();
+    for (const user of users) {
+      if (confirmed.has(user.id)) {
+        map.set(user.nickname.toLowerCase(), user.id);
+      }
+    }
+    return map;
+  }, [users, message.mentionUserIds]);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.body);
   const [confirming, setConfirming] = useState(false);
@@ -163,12 +187,36 @@ export function MessageItem({
       <div className="min-w-0">
         {continued ? null : (
           <div className="flex items-baseline gap-2">
-            <span
-              className="truncate text-[13px] font-medium text-foreground"
-              style={roleNameStyle(authorColor)}
-            >
-              {message.senderNickname}
-            </span>
+            {author ? (
+              <button
+                type="button"
+                onClick={(event) =>
+                  useAppStore
+                    .getState()
+                    .openUserMenu(
+                      author.id,
+                      event.clientX,
+                      event.clientY,
+                    )
+                }
+                aria-label={t("userMenu.title", {
+                  name: message.senderNickname,
+                })}
+                data-testid="message-author"
+                className="min-w-0 cursor-pointer truncate rounded-sm bg-transparent p-0 text-left text-[13px] font-medium text-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                style={roleNameStyle(authorColor)}
+              >
+                {message.senderNickname}
+              </button>
+            ) : (
+              <span
+                className="min-w-0 truncate text-[13px] font-medium text-foreground"
+                style={roleNameStyle(authorColor)}
+                data-testid="message-author-offline"
+              >
+                {message.senderNickname}
+              </span>
+            )}
             <time
               className="shrink-0 text-[11px] text-faint"
               dateTime={new Date(message.createdAtUnixMs).toISOString()}
@@ -226,7 +274,15 @@ export function MessageItem({
             className="whitespace-pre-wrap break-words text-[13px] leading-[1.45] text-foreground/90"
             data-testid="message-body"
           >
-            <Markup text={message.body} />
+            <Markup
+              text={message.body}
+              mentions={mentionMap}
+              onMentionClick={(userId, clientX, clientY) =>
+                useAppStore
+                  .getState()
+                  .openUserMenu(userId, clientX, clientY)
+              }
+            />
           </div>
         )}
 

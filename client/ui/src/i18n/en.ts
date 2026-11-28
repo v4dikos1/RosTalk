@@ -1,6 +1,7 @@
 import type { ru } from "./ru";
 
 export const en: typeof ru = {
+  newYearShell: { title: "New Year tree", description: "Decorate a tree and collect gifts with your server.", install: "Install", later: "Later", plugins: "Plugins", enable: "Enable", disable: "Disable", remove: "Uninstall", offline: "Not connected to a server", unavailable: "Game unavailable on this server. Reconnect or check the server version.", checking: "Checking server support…", supported: "Server supports the event · {{season}} · {{phase}}", enabled: "Installed", disabled: "Disabled", absent: "Not installed", activity: "After joining, the server continues awarding activity while the game is closed.", tree: "Open tree", saveError: "Could not save settings." },
   app: {
     name: "RosTalk",
     tagline: "Voice chat for your people",
@@ -567,14 +568,29 @@ export const en: typeof ru = {
       background: "Background combinations",
       backgroundHint:
         "Capture Ctrl, Shift or Alt combinations while a game is focused. Off by default; a single key or mouse button works in the background without it.",
-      pttNeedsSingleKey:
-        "Push-to-talk in a game needs a single key or mouse button, or the background combinations switch.",
       registrationError: "Global input is not running: {{error}}",
       pttError: "Push-to-talk is unavailable: {{error}}",
       capturing: "Press keys…",
       unbound: "Not assigned",
       reset: "Restore defaults",
       clearHint: "Backspace clears an assignment.",
+      scope: {
+        global: "Background",
+        globalHint:
+          "Raw Input is installed: the action works while the RosTalk window is not focused or is minimised.",
+        window: "Window only",
+        windowHint: "Works only while the RosTalk window is focused.",
+        unset: "Not set",
+        unsetHint: "No key is assigned.",
+        unavailable: "Unavailable",
+        invalidReason: "A key is required after the modifiers.",
+        unavailableReason: "Background input is not installed for this action.",
+        unsupportedReason: "Background input is not available in this build.",
+      },
+      enableBackground: "Enable background combinations",
+      enableBackgroundHint: "Captures combinations while a game is focused.",
+      windowOnlyWarning:
+        "“Window only” actions work while the RosTalk window is focused. Push-to-talk has no window fallback: a combination starts working only after background mode is enabled. It captures the keyboard — a deliberate trade-off for anti-cheat compatibility (ADR 0012), so it is never enabled automatically.",
       pushToTalk: "Push-to-talk",
       toggleMute: "Mute microphone",
       toggleDeafen: "Mute sound",
@@ -1062,6 +1078,20 @@ export const en: typeof ru = {
     emoji: "Emoji",
     emojiSearch: "Search emoji",
     emojiNoResults: "Nothing found",
+    emojiCategories: "Emoji categories",
+    emojiLoading: "Loading emoji…",
+    emojiLoadFailed: "Could not load emoji",
+    emojiGroups: {
+      smileys: "Smileys",
+      people: "People",
+      nature: "Nature",
+      food: "Food",
+      travel: "Places",
+      activities: "Activities",
+      objects: "Objects",
+      symbols: "Symbols",
+      flags: "Flags",
+    },
     directMessages: "Direct messages",
     directMessage: "Direct message",
     today: "Today",

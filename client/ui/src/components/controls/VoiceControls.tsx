@@ -43,6 +43,8 @@ interface ControlButtonProps {
   active?: boolean;
   disabled?: boolean;
   tone?: "neutral" | "danger" | "accent";
+  /** A one-shot action that is destructive at rest, not only when active. */
+  destructive?: boolean;
   onClick: () => void;
   testId?: string;
 }
@@ -54,6 +56,7 @@ function ControlButton({
   active = false,
   disabled = false,
   tone = "neutral",
+  destructive = false,
   onClick,
   testId,
 }: ControlButtonProps) {
@@ -63,7 +66,7 @@ function ControlButton({
         <button
           type="button"
           aria-label={label}
-          aria-pressed={active}
+          aria-pressed={destructive ? undefined : active}
           data-testid={testId}
           disabled={disabled}
           onClick={onClick}
@@ -76,7 +79,9 @@ function ControlButton({
                 : tone === "accent"
                   ? "border-accent/60 bg-accent/15 text-accent"
                   : "border-border-strong bg-active text-foreground"
-              : "border-transparent text-muted hover:bg-hover hover:text-foreground",
+              : destructive
+                ? "border-transparent text-danger hover:bg-danger/15 hover:text-danger"
+                : "border-transparent text-muted hover:bg-hover hover:text-foreground",
           )}
         >
           <Icon className="size-4" aria-hidden />
@@ -93,9 +98,11 @@ function ControlButton({
  * The single voice group of stage P26 (ADR 0038).
  *
  * Microphone, transmission mode, self-monitoring, sound and leaving the
- * channel live together in the sidebar footer. Leaving asks the core, which
- * knows the voice channel the user is actually connected to — not the channel
- * currently open in the centre pane (playtest-2, complaints 14–15).
+ * channel live together in the sidebar footer. Since P33 leaving is the fifth
+ * control of the same row: the same size, tooltip and spacing as the others,
+ * with the destructive accent at rest. Leaving asks the core, which knows the
+ * voice channel the user is actually connected to — not the channel currently
+ * open in the centre pane (playtest-2, complaints 14–15).
  */
 export function VoiceControls({ className }: { className?: string }) {
   const { t } = useTranslation();
@@ -150,7 +157,9 @@ export function VoiceControls({ className }: { className?: string }) {
       : t("controls.pttBinding", { binding: bindingLabel })
     : t(`controls.gate.${gate.mode}`);
   const threshold = gate.mode === "voiceActivation" ? gate.threshold_db : null;
-  const leaveLabel = t("channel.leave");
+  const leaveLabel = voiceChannel
+    ? t("controls.leaveHint", { channel: voiceChannel.name })
+    : t("channel.leave");
 
   function chooseGate(mode: GateMode["mode"]) {
     setGateOpen(false);
@@ -175,7 +184,10 @@ export function VoiceControls({ className }: { className?: string }) {
         className,
       )}
     >
-      <div className="flex items-center gap-1">
+      <div
+        data-testid="voice-control-row"
+        className="flex items-center gap-1"
+      >
         <ControlButton
           icon={micMuted ? MicOff : Mic}
           label={
@@ -298,34 +310,19 @@ export function VoiceControls({ className }: { className?: string }) {
           }
           testId="control-sound"
         />
+
+        {inVoice ? (
+          <ControlButton
+            icon={LogOut}
+            label={leaveLabel}
+            destructive
+            onClick={() => void leaveVoiceChannel()}
+            testId="control-leave"
+          />
+        ) : null}
       </div>
 
-      {inVoice ? (
-        <button
-          type="button"
-          onClick={() => void leaveVoiceChannel()}
-          data-testid="control-leave"
-          aria-label={
-            voiceChannel
-              ? t("controls.leaveHint", { channel: voiceChannel.name })
-              : leaveLabel
-          }
-          title={
-            voiceChannel
-              ? t("controls.leaveHint", { channel: voiceChannel.name })
-              : leaveLabel
-          }
-          className="mt-1 flex h-7 w-full min-w-0 items-center gap-1.5 rounded-md border border-border px-2 text-[11px] text-muted transition-colors duration-150 hover:bg-hover hover:text-foreground"
-        >
-          <LogOut className="size-3.5 shrink-0" aria-hidden />
-          <span className="min-w-0 truncate">{leaveLabel}</span>
-          {voiceChannel ? (
-            <span className="ml-auto min-w-0 truncate text-[10px] text-faint">
-              {voiceChannel.name}
-            </span>
-          ) : null}
-        </button>
-      ) : (
+      {inVoice ? null : (
         <p
           data-testid="voice-idle"
           className="mt-1 truncate px-1 text-[11px] text-faint"

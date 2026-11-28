@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Avatar } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -25,6 +26,7 @@ export interface AvatarViewerDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Server identity for the fallback palette. */
   serverId: string | null;
+  onOpenTree?: (() => void) | undefined;
 }
 
 /**
@@ -43,6 +45,7 @@ export function AvatarViewerDialog({
   attempt,
   onOpenChange,
   serverId,
+  onOpenTree,
 }: AvatarViewerDialogProps) {
   const { t } = useTranslation();
   const proxy = useChatStore((store) => store.proxy);
@@ -115,6 +118,7 @@ export function AvatarViewerDialog({
             </Avatar>
           )}
         </div>
+        {onOpenTree && <div className="p-4"><Button onClick={onOpenTree}>{t("newYearShell.tree")}</Button></div>}
       </DialogContent>
     </Dialog>
   );

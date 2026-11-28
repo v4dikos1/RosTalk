@@ -1,0 +1,22 @@
+.new-year-game .ny-editor { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+.new-year-game .ny-editor-controls { display: grid; align-content: start; gap: 8px; }
+.new-year-game .ny-editor-controls input, .new-year-game .ny-editor-controls select { color: inherit; background: var(--background); border: 1px solid currentColor; }
+.new-year-game .ny-inventory { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; }
+.new-year-game .ny-inventory button { display: flex; align-items: center; text-align: left; border: 1px solid currentColor; border-radius: 4px; }
+.new-year-game .ny-inventory button[aria-pressed="true"] { outline: 2px solid #d7a454; }
+.new-year-game .ny-inventory img, .new-year-game .ny-inventory .ny-ornament-fallback { width: 40px; height: 40px; }
+.new-year-game .ny-crown { touch-action: none; }
+@media (max-width: 760px) { .new-year-game .ny-editor { grid-template-columns: 1fr; } }
+.new-year-game .ny-editor { align-items: start; gap: 16px; }
+.new-year-game .ny-editor .ny-scene { border-radius: 12px; }
+.new-year-game .ny-editor-controls { gap: 12px; padding: 14px; border: 1px solid #d7a45440; border-radius: 12px; background: #172d3c; }
+.new-year-game .ny-editor-controls h2 { font-size: 15px; font-weight: 600; }.new-year-game .ny-editor-controls p { color: #b9cdd2; font-size: 12px; line-height: 1.45; }
+.new-year-game .ny-inventory { gap: 6px; }
+.new-year-game .ny-inventory .ny-inventory-item { height: auto; min-height: 60px; justify-content: start; padding: 4px; white-space: normal; color: #e7f3f4; background: #102235; border-color: #e7f3f433; font-size: 11px; }
+.new-year-game .ny-inventory .ny-inventory-item.ny-border-rare { border-color: #77b8d688; }.new-year-game .ny-inventory .ny-inventory-item.ny-border-epic { border-color: #b3a0cd88; }.new-year-game .ny-inventory .ny-inventory-item.ny-border-legendary { border-color: #d7a454aa; }
+.new-year-game .ny-inventory .ny-inventory-item[aria-pressed="true"] { outline: 2px solid #d7a454; }
+.new-year-game .ny-inventory small { display: block; color: #afc4ca; font-size: 10px; }
+.new-year-game .ny-background-control { display: grid; gap: 6px; font-size: 12px; }.new-year-game .ny-background-control [role="group"] { width: fit-content; }
+.new-year-game .ny-adjust { display: grid; grid-template-columns: 1fr 64px; align-items: center; gap: 6px 10px; font-size: 12px; }.new-year-game .ny-adjust label { grid-column: 1 / -1; }.new-year-game .ny-adjust input[type="number"] { height: 28px; }
+.new-year-game .ny-remove { justify-self: start; color: #f3a3a7; }.new-year-game .ny-editor-actions { display: flex; justify-content: space-between; gap: 8px; }
+.new-year-game.ny-scene { border-radius: 12px; }

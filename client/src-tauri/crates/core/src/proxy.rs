@@ -6,7 +6,7 @@
 //! request and forwards history, uploads and attachment reads over a TLS
 //! connection pinned to the leaf fingerprint from the active invite link.
 //!
-//! Only the chat routes and the self-service avatar routes exist. There is no
+//! Chat, avatar and New Year event routes are explicitly allowlisted. There is no
 //! generic forwarder, so a page script cannot turn the proxy into an open
 //! client for the server. The token and the session token are never logged.
 //! Another user's avatar can only be read: the former cross-user reset route
@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use http_body_util::combinators::BoxBody;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::{Frame, Incoming};
 use hyper::header::{
     HeaderValue, ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE,
@@ -45,7 +45,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, OnceCell};
 use tokio_rustls::TlsConnector;
 
 use crate::error::CoreError;
@@ -77,6 +77,11 @@ const AVATAR_CACHE_BODY_LIMIT: usize = 2 << 20;
 const AVATAR_CACHE_ENTRIES: usize = 256;
 const AVATAR_CACHE_BYTES: usize = 32 << 20;
 const AVATAR_CACHE_TTL: Duration = Duration::from_secs(3600);
+const EVENT_PREFIX: &str = "/events/new-year";
+const EVENT_SMALL_BODY_LIMIT: usize = 256;
+const EVENT_LAYOUT_BODY_LIMIT: usize = 4096;
+const EVENT_RESPONSE_LIMIT: usize = 32 * 1024;
+const EVENT_SUPPORT_LIMIT: usize = 256;
 
 /// Streaming response body fed by one TLS pump task.
 type ProxyBody = BoxBody<Bytes, io::Error>;
@@ -117,6 +122,7 @@ impl ChatProxy {
             token: token.clone(),
             max_upload: max_upload.max(1),
             avatars: Mutex::new(AvatarCache::default()),
+            new_year_support: OnceCell::new(),
         });
 
         tokio::spawn(async move {
@@ -180,6 +186,7 @@ struct ProxyState {
     max_upload: u64,
     /// Avatars already downloaded in this session, keyed by content hash.
     avatars: Mutex<AvatarCache>,
+    new_year_support: OnceCell<Result<Bytes, ProxyError>>,
 }
 
 async fn handle(
@@ -223,6 +230,10 @@ async fn route(
         || ((attachment || avatar) && query_token_matches(request.uri().query(), &state.token));
     if !authorized {
         return Ok(status_response(StatusCode::UNAUTHORIZED, "unauthenticated"));
+    }
+
+    if let Some(suffix) = path.strip_prefix(EVENT_PREFIX) {
+        return route_event(request, state, suffix).await;
     }
 
     let query = request.uri().query().unwrap_or("").to_owned();
@@ -287,6 +298,7 @@ async fn route(
             content_length,
             range: range.as_ref(),
             body_limit,
+            response_limit: None,
         },
         request.into_body(),
     )
@@ -339,6 +351,211 @@ async fn route(
             .header("X-Frame-Options", "DENY");
     }
     builder.body(upstream.body).map_err(ProxyError::internal)
+}
+
+#[derive(Clone, Copy)]
+enum EventRoute {
+    Support,
+    Game { request_limit: usize },
+}
+
+fn event_route(method: &Method, suffix: &str) -> Option<EventRoute> {
+    let request_limit = match (method, suffix) {
+        (&Method::GET, "/support") => return Some(EventRoute::Support),
+        (&Method::GET, "/me") => 0,
+        (&Method::GET, path) if path.strip_prefix("/trees/").is_some_and(canonical_peer_id) => 0,
+        (&Method::PUT, "/me/enrollment")
+        | (&Method::POST, "/me/claim" | "/me/water" | "/me/spins") => EVENT_SMALL_BODY_LIMIT,
+        (&Method::PUT, "/me/layout") => EVENT_LAYOUT_BODY_LIMIT,
+        _ => return None,
+    };
+    Some(EventRoute::Game { request_limit })
+}
+
+fn canonical_peer_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 19
+        && !id.starts_with('0')
+        && id.bytes().all(|byte| byte.is_ascii_digit())
+        && id.parse::<i64>().is_ok()
+}
+
+fn is_json(content_type: &str) -> bool {
+    content_type
+        .split(';')
+        .next()
+        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+}
+
+async fn route_event(
+    request: Request<Incoming>,
+    state: Arc<ProxyState>,
+    suffix: &str,
+) -> Result<Response<ProxyBody>, ProxyError> {
+    let Some(route) = event_route(request.method(), suffix) else {
+        return Ok(status_response(StatusCode::NOT_FOUND, "not_found"));
+    };
+    if request.uri().query().is_some() {
+        return Ok(status_response(StatusCode::NOT_FOUND, "not_found"));
+    }
+    let request_limit = match route {
+        EventRoute::Support => 0,
+        EventRoute::Game { request_limit } => request_limit,
+    };
+    let declared = request
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if declared.is_some_and(|length| length > request_limit as u64) {
+        return Err(ProxyError::too_large());
+    }
+    if request_limit > 0
+        && !request
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(is_json)
+    {
+        return Ok(status_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported_media_type",
+        ));
+    }
+
+    // Buffer only these small JSON requests so a rejected body never reaches TLS.
+    let (head, incoming) = request.into_parts();
+    let body = tokio::time::timeout(IO_TIMEOUT, Limited::new(incoming, request_limit).collect())
+        .await
+        .map_err(|_| ProxyError::timeout())?
+        .map_err(|error| {
+            if error.is::<LengthLimitError>() {
+                ProxyError::too_large()
+            } else {
+                ProxyError::network()
+            }
+        })?
+        .to_bytes();
+
+    if matches!(route, EventRoute::Support) {
+        // A WebView can disappear while discovery is running. Keep the shared
+        // probe alive and remember even an inconclusive result until reconnect.
+        let bytes = tokio::spawn(async move {
+            state
+                .new_year_support
+                .get_or_init(|| async {
+                    tokio::time::timeout(IO_TIMEOUT, fetch_event_support(&state))
+                        .await
+                        .map_err(|_| ProxyError::timeout())?
+                })
+                .await
+                .clone()
+        })
+        .await
+        .map_err(ProxyError::internal)??;
+        return event_response(StatusCode::OK, bytes);
+    }
+
+    let target = upstream_target(head.uri.path(), "");
+    let upstream = forward_event(&state, &head.method, &target, body, EVENT_RESPONSE_LIMIT).await?;
+    let content_type = upstream.content_type.to_str().ok();
+    if !content_type.is_some_and(is_json) {
+        return Err(event_upstream_error(upstream.status));
+    }
+    let bytes = collect_body(upstream.body, EVENT_RESPONSE_LIMIT).await?;
+    event_response(upstream.status, bytes)
+}
+
+async fn forward_event(
+    state: &ProxyState,
+    method: &Method,
+    target: &str,
+    body: Bytes,
+    response_limit: usize,
+) -> Result<Upstream, ProxyError> {
+    let length = body.len() as u64;
+    forward(
+        state,
+        method,
+        target,
+        ForwardHead {
+            content_type: "application/json",
+            content_length: Some(length),
+            range: None,
+            body_limit: length,
+            response_limit: Some(response_limit),
+        },
+        Full::new(body),
+    )
+    .await
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EventSupport {
+    api_version: u32,
+    season: String,
+    phase: EventPhase,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum EventPhase {
+    Upcoming,
+    Active,
+    Gallery,
+    Closed,
+}
+
+async fn fetch_event_support(state: &ProxyState) -> Result<Bytes, ProxyError> {
+    let target = format!("{API_PREFIX}{EVENT_PREFIX}/support");
+    let upstream = forward_event(
+        state,
+        &Method::GET,
+        &target,
+        Bytes::new(),
+        EVENT_SUPPORT_LIMIT,
+    )
+    .await?;
+    if upstream.status != StatusCode::OK
+        || !upstream.content_type.to_str().ok().is_some_and(is_json)
+    {
+        return Err(event_upstream_error(upstream.status));
+    }
+    let bytes = collect_body(upstream.body, EVENT_SUPPORT_LIMIT).await?;
+    let support: EventSupport = serde_json::from_slice(&bytes).map_err(ProxyError::internal)?;
+    let valid_season = support.season.split_once('-').is_some_and(|(year, month)| {
+        year.len() == 4
+            && year.bytes().all(|byte| byte.is_ascii_digit())
+            && matches!(month.as_bytes(), [b'0', b'1'..=b'9'] | [b'1', b'0'..=b'2'])
+    });
+    if !valid_season {
+        return Err(ProxyError::upstream("invalid event season"));
+    }
+    serde_json::to_vec(&support)
+        .map(Bytes::from)
+        .map_err(ProxyError::internal)
+}
+
+fn event_upstream_error(status: StatusCode) -> ProxyError {
+    let code = match status {
+        StatusCode::UNAUTHORIZED => "unauthenticated",
+        StatusCode::FORBIDDEN => "permission_denied",
+        StatusCode::NOT_FOUND => "not_found",
+        status if status.is_client_error() || status.is_server_error() => "upstream_failed",
+        _ => return ProxyError::upstream("invalid event response"),
+    };
+    ProxyError { status, code }
+}
+
+fn event_response(status: StatusCode, bytes: Bytes) -> Result<Response<ProxyBody>, ProxyError> {
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Cache-Control", "no-store")
+        .body(full_body(bytes))
+        .map_err(ProxyError::internal)
 }
 
 fn empty_body() -> ProxyBody {
@@ -505,7 +722,7 @@ fn avatar_response(
     builder.body(full_body(bytes)).map_err(ProxyError::internal)
 }
 
-/// Collects a small response body (an avatar), refusing anything that could
+/// Collects a small response body, refusing anything that could
 /// make the core hold a large buffer. Attachment reads keep streaming.
 async fn collect_body(mut body: ProxyBody, limit: usize) -> Result<Bytes, ProxyError> {
     let mut collected = BytesMut::new();
@@ -515,7 +732,7 @@ async fn collect_body(mut body: ProxyBody, limit: usize) -> Result<Bytes, ProxyE
             continue;
         };
         if collected.len().saturating_add(data.len()) > limit {
-            return Err(ProxyError::upstream("the avatar is too large"));
+            return Err(ProxyError::upstream("the response is too large"));
         }
         collected.extend_from_slice(data);
     }
@@ -557,8 +774,9 @@ struct ForwardHead<'a> {
     content_type: &'a str,
     content_length: Option<u64>,
     range: Option<&'a HeaderValue>,
-    /// Declared body ceiling for this route (attachments or avatars).
+    /// Declared body ceiling for this route.
     body_limit: u64,
+    response_limit: Option<usize>,
 }
 
 async fn forward(
@@ -566,13 +784,14 @@ async fn forward(
     method: &Method,
     target: &str,
     head: ForwardHead<'_>,
-    body: Incoming,
+    body: impl hyper::body::Body<Data = Bytes> + Unpin,
 ) -> Result<Upstream, ProxyError> {
     let ForwardHead {
         content_type,
         content_length,
         range,
         body_limit,
+        response_limit,
     } = head;
     let setup = tls::tls_setup(state.link.mode(), state.fingerprint).map_err(ProxyError::core)?;
     let server_name = tls::server_name(&state.link.hostname).map_err(ProxyError::core)?;
@@ -652,7 +871,7 @@ async fn forward(
     }
     stream.flush().await.map_err(|_| ProxyError::network())?;
 
-    read_response(stream).await
+    read_response(stream, response_limit).await
 }
 
 /// Reads and parses one HTTP/1.1 response head, then hands the body to a pump
@@ -660,6 +879,7 @@ async fn forward(
 /// rostalk-server.
 async fn read_response(
     mut stream: tokio_rustls::client::TlsStream<TcpStream>,
+    response_limit: Option<usize>,
 ) -> Result<Upstream, ProxyError> {
     let mut buffer = Vec::with_capacity(4096);
     let head_end = loop {
@@ -724,6 +944,12 @@ async fn read_response(
         }
     }
 
+    if response_limit
+        .zip(content_length)
+        .is_some_and(|(limit, length)| length > limit as u64)
+    {
+        return Err(event_upstream_error(status));
+    }
     let prefix = buffer.split_off(head_end + 4);
     let (sender, receiver) = mpsc::channel(BODY_CHANNEL);
     tokio::spawn(async move {
@@ -826,6 +1052,12 @@ where
         let line_end = loop {
             if let Some(position) = buffer.windows(2).position(|window| window == b"\r\n") {
                 break position;
+            }
+            if buffer.len() > BODY_CHUNK {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "oversized chunk header",
+                ));
             }
             read_more(stream, &mut buffer, idle).await.map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "malformed chunk header")
@@ -1039,6 +1271,7 @@ fn status_response(status: StatusCode, code: &str) -> Response<ProxyBody> {
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .header("Cache-Control", "no-store")
         .body(full_body(Bytes::from(body)))
         .unwrap_or_else(|_| Response::new(empty_body()))
 }
@@ -1049,6 +1282,7 @@ fn error_response(error: &ProxyError) -> Response<ProxyBody> {
 }
 
 /// Internal proxy failure with a safe public code.
+#[derive(Clone)]
 struct ProxyError {
     status: StatusCode,
     code: &'static str,
@@ -1318,6 +1552,273 @@ mod tests {
             "{}",
             requests[0]
         );
+    }
+
+    #[tokio::test]
+    async fn new_year_allows_only_exact_header_authenticated_event_routes() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let (authority, fingerprint) = mock_upstream_capturing(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            Some(captured.clone()),
+        )
+        .await;
+        let proxy = event_proxy(&authority, fingerprint).await;
+        let request = format!(
+            "GET {EVENT_PREFIX}/support?pt={} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer role-token\r\nConnection: close\r\n\r\n",
+            proxy.token()
+        );
+        let response = ask(&proxy, &request).await;
+        assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+
+        let response = ask_event(
+            &proxy,
+            "OPTIONS",
+            "/support",
+            "Origin: http://tauri.localhost\r\n",
+            "",
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+        assert!(
+            response.contains("access-control-allow-origin: http://tauri.localhost"),
+            "{response}"
+        );
+
+        for (method, suffix) in [
+            ("HEAD", "/support"),
+            ("FROB", "/me"),
+            ("GET", "/me/layout"),
+            ("POST", "/me/enrollment"),
+            ("DELETE", "/me/layout"),
+            ("GET", "/support?"),
+            ("GET", "/me?debug=1"),
+            ("GET", "/trees/7?x=1"),
+            ("GET", "/support/"),
+            ("GET", "/unsupported"),
+            ("GET", "/trees/0"),
+            ("GET", "/trees/07"),
+            ("GET", "/trees/+7"),
+            ("GET", "/trees/%37"),
+            ("GET", "/trees/7/extra"),
+            ("GET", "/trees/7/"),
+            ("GET", "/trees/9223372036854775808"),
+        ] {
+            let response = ask_event(&proxy, method, suffix, "", "").await;
+            assert!(
+                response.starts_with("HTTP/1.1 404"),
+                "{method} {suffix}: {response}"
+            );
+        }
+        assert!(captured.lock().expect("capture").is_empty());
+
+        let reads = [("GET", "/me"), ("GET", "/trees/9223372036854775807")];
+        let writes = [
+            ("PUT", "/me/enrollment"),
+            ("POST", "/me/claim"),
+            ("POST", "/me/water"),
+            ("POST", "/me/spins"),
+            ("PUT", "/me/layout"),
+        ];
+        let passthrough_attempt = "Authorization: Bearer role-token\r\nRange: bytes=0-1\r\n";
+        for (method, suffix) in reads {
+            let response = ask_event(&proxy, method, suffix, passthrough_attempt, "").await;
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        }
+        for (method, suffix) in writes {
+            let headers = format!("{passthrough_attempt}Content-Type: application/json; charset=utf-8\r\nContent-Length: 2\r\n");
+            let response = ask_event(&proxy, method, suffix, &headers, "{}").await;
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        }
+        let requests = captured.lock().expect("capture");
+        assert_eq!(requests.len(), 7);
+        for (request, (method, suffix)) in requests.iter().zip(reads.into_iter().chain(writes)) {
+            assert!(
+                request.starts_with(&format!("{method} /api/v1{EVENT_PREFIX}{suffix} HTTP/1.1"))
+            );
+            assert!(request.contains("Authorization: Bearer session-token\r\n"));
+            assert!(!request.contains("role-token"));
+            assert!(!request.contains("Range:"));
+            assert!(!request.contains(proxy.token()));
+        }
+    }
+
+    #[tokio::test]
+    async fn new_year_rejects_declared_and_chunked_bodies_over_each_route_limit() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let (authority, fingerprint) = mock_upstream_capturing(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            Some(captured.clone()),
+        )
+        .await;
+        let proxy = event_proxy(&authority, fingerprint).await;
+        for (method, suffix, limit) in [
+            ("GET", "/support", 0),
+            ("GET", "/me", 0),
+            ("PUT", "/me/enrollment", 256),
+            ("POST", "/me/claim", 256),
+            ("POST", "/me/water", 256),
+            ("POST", "/me/spins", 256),
+            ("PUT", "/me/layout", 4096),
+        ] {
+            let headers = format!(
+                "Content-Type: application/json\r\nContent-Length: {}\r\n",
+                limit + 1
+            );
+            let response = ask_event(&proxy, method, suffix, &headers, "").await;
+            assert!(response.starts_with("HTTP/1.1 413"), "{suffix}: {response}");
+            assert!(response.contains("file_too_large"), "{response}");
+
+            let mut chunks = String::new();
+            if limit > 0 {
+                chunks = format!("{limit:x}\r\n{}\r\n", "x".repeat(limit));
+            }
+            chunks.push_str("1\r\nx\r\n0\r\n\r\n");
+            let response = ask_event(
+                &proxy,
+                method,
+                suffix,
+                "Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n",
+                &chunks,
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 413"), "{suffix}: {response}");
+            assert!(response.contains("file_too_large"), "{response}");
+        }
+        let response = ask_event(
+            &proxy,
+            "PUT",
+            "/me/layout",
+            "Content-Type: text/plain\r\nContent-Length: 2\r\n",
+            "{}",
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 415"), "{response}");
+        assert!(captured.lock().expect("capture").is_empty());
+
+        for (method, suffix, limit) in [("POST", "/me/spins", 256), ("PUT", "/me/layout", 4096)] {
+            let body = format!("{limit:x}\r\n{{}}{}\r\n0\r\n\r\n", " ".repeat(limit - 2));
+            let response = ask_event(
+                &proxy,
+                method,
+                suffix,
+                "Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n",
+                &body,
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 200"), "{suffix}: {response}");
+        }
+        let requests = captured.lock().expect("capture");
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("Content-Length: 256\r\n"));
+        assert!(requests[1].contains("Content-Length: 4096\r\n"));
+    }
+
+    #[tokio::test]
+    async fn new_year_support_is_single_flight_sanitized_and_scoped_to_the_session() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let body = r#"{"apiVersion":1,"season":"2026-12","phase":"active","extra":"discard"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (authority, fingerprint) =
+            mock_upstream_capturing(response, Some(captured.clone())).await;
+        let proxy = event_proxy(&authority, fingerprint).await;
+        let (first, second) = tokio::join!(
+            ask_event(&proxy, "GET", "/support", "", ""),
+            ask_event(&proxy, "GET", "/support", "", ""),
+        );
+        for response in [
+            first,
+            second,
+            ask_event(&proxy, "GET", "/support", "", "").await,
+        ] {
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            assert!(response.contains("cache-control: no-store"));
+            assert!(
+                response.ends_with(r#"{"apiVersion":1,"season":"2026-12","phase":"active"}"#),
+                "{response}"
+            );
+        }
+        assert_eq!(captured.lock().expect("capture").len(), 1);
+
+        for _ in 0..2 {
+            let response = ask_event(&proxy, "GET", "/me", "", "").await;
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        }
+        assert_eq!(captured.lock().expect("capture").len(), 3);
+        let new_session = event_proxy(&authority, fingerprint).await;
+        let response = ask_event(&new_session, "GET", "/support", "", "").await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(captured.lock().expect("capture").len(), 4);
+
+        let wrong_pin = event_proxy(&authority, [0; 32]).await;
+        let response = ask_event(&wrong_pin, "GET", "/support", "", "").await;
+        assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+        assert!(
+            response.contains("server_certificate_mismatch"),
+            "{response}"
+        );
+        assert_eq!(captured.lock().expect("capture").len(), 4);
+    }
+
+    #[tokio::test]
+    async fn new_year_support_caches_only_sanitized_failure_for_inconclusive_replies() {
+        let oversized_chunk = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n101\r\n{}\r\n0\r\n\r\n", "x".repeat(257));
+        for (upstream, status) in [
+            ("HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 14\r\n\r\n<b>ignored</b>".to_owned(), "HTTP/1.1 404"),
+            ("HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 300\r\n\r\n".to_owned(), "HTTP/1.1 404"),
+            ("HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}".to_owned(), "HTTP/1.1 403"),
+            ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}".to_owned(), "HTTP/1.1 502"),
+            ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 257\r\n\r\n".to_owned(), "HTTP/1.1 502"),
+            (oversized_chunk, "HTTP/1.1 502"),
+        ] {
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let (authority, fingerprint) = mock_upstream_capturing(upstream, Some(captured.clone())).await;
+            let proxy = event_proxy(&authority, fingerprint).await;
+            for _ in 0..2 {
+                let response = ask_event(&proxy, "GET", "/support", "", "").await;
+                assert!(response.starts_with(status), "{response}");
+                assert!(!response.contains("<b>"));
+                assert!(response.contains("cache-control: no-store"));
+            }
+            assert_eq!(captured.lock().expect("capture").len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn new_year_game_reads_refuse_oversized_upstream_bodies() {
+        let body = "x".repeat(32 * 1024 + 1);
+        let size = body.len();
+        let upstream = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{size:x}\r\n{body}\r\n0\r\n\r\n"
+        );
+        let (authority, fingerprint) = mock_upstream_capturing(upstream, None).await;
+        let proxy = event_proxy(&authority, fingerprint).await;
+        let response = ask_event(&proxy, "GET", "/me", "", "").await;
+        assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+        assert!(response.contains("upstream_failed"));
+    }
+
+    async fn event_proxy(authority: &str, fingerprint: [u8; 32]) -> ChatProxy {
+        let link = InviteLink::parse(&format!(
+            "rostalk://join?host={authority}&fp={}",
+            hex::encode(fingerprint)
+        ))
+        .expect("link");
+        ChatProxy::start(link, fingerprint, "session-token".to_owned(), 1 << 20)
+            .await
+            .expect("proxy")
+    }
+
+    async fn ask_event(
+        proxy: &ChatProxy,
+        method: &str,
+        suffix: &str,
+        headers: &str,
+        body: &str,
+    ) -> String {
+        ask(proxy, &format!("{method} {EVENT_PREFIX}{suffix} HTTP/1.1\r\nHost: x\r\nX-RosTalk-Proxy-Token: {}\r\nConnection: close\r\n{headers}\r\n{body}", proxy.token())).await
     }
 
     #[tokio::test]
@@ -1864,9 +2365,10 @@ mod tests {
     /// Same, recording every request head it receives, for assertions about
     /// what the proxy actually forwards to the server.
     async fn mock_upstream_capturing(
-        response: &'static str,
+        response: impl Into<String>,
         capture: Option<Arc<std::sync::Mutex<Vec<String>>>>,
     ) -> (String, [u8; 32]) {
+        let response: Arc<str> = Arc::from(response.into());
         let certified =
             rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).expect("certificate");
         let certificate = certified.cert.der().clone();
@@ -1891,6 +2393,7 @@ mod tests {
                 };
                 let acceptor = acceptor.clone();
                 let capture = capture.clone();
+                let response = response.clone();
                 tokio::spawn(async move {
                     let Ok(mut tls) = acceptor.accept(stream).await else {
                         return;

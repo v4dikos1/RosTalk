@@ -183,3 +183,27 @@ func TestParseRunConfigNATMode(t *testing.T) {
 		t.Fatal("an unknown --nat mode was accepted")
 	}
 }
+
+func TestParseRunConfigNewYear(t *testing.T) {
+	t.Setenv("ROSTALK_NEW_YEAR_DISABLED", "")
+	t.Setenv("ROSTALK_NEW_YEAR_TZ", "")
+	var stderr bytes.Buffer
+	cfg, err := parseRunConfig(nil, &stderr)
+	if err != nil || cfg.newYearDisabled || cfg.newYearTZ != "" {
+		t.Fatalf("defaults: %+v, %v", cfg, err)
+	}
+	t.Setenv("ROSTALK_NEW_YEAR_DISABLED", "true")
+	t.Setenv("ROSTALK_NEW_YEAR_TZ", "Europe/Moscow")
+	cfg, err = parseRunConfig(nil, &stderr)
+	if err != nil || !cfg.newYearDisabled || cfg.newYearTZ != "Europe/Moscow" {
+		t.Fatalf("environment: %+v, %v", cfg, err)
+	}
+	cfg, err = parseRunConfig([]string{"--new-year-disabled=false", "--new-year-tz=UTC"}, &stderr)
+	if err != nil || cfg.newYearDisabled || cfg.newYearTZ != "UTC" {
+		t.Fatalf("flags: %+v, %v", cfg, err)
+	}
+	t.Setenv("ROSTALK_NEW_YEAR_DISABLED", "maybe")
+	if _, err := parseRunConfig(nil, &stderr); err == nil {
+		t.Fatal("a non-boolean ROSTALK_NEW_YEAR_DISABLED was accepted")
+	}
+}

@@ -5,6 +5,9 @@ import { vi } from "vitest";
 import type { AttachmentView, MessageView } from "@/core/api";
 import { i18n } from "@/i18n";
 import { MAX_COPY_IMAGE_BYTES, MAX_COPY_IMAGE_PIXELS } from "@/lib/chat";
+import { fixtureState } from "@/mock/fixtures";
+import { useAppStore } from "@/store/appStore";
+import { useCoreStore } from "@/store/coreStore";
 import { useSettingsStore } from "@/store/settingsStore";
 
 import { MessageItem } from "./MessageItem";
@@ -51,12 +54,14 @@ function messageItem(
   attachments: AttachmentView[],
   senderId = 2,
   proxyValue: typeof proxy = proxy,
+  authorColor: string | null = null,
+  overrides: Partial<MessageView> = {},
 ) {
   return (
     <MessageItem
-      message={message(attachments, senderId)}
+      message={{ ...message(attachments, senderId), ...overrides }}
       selfUserId={1}
-      authorColor={null}
+      authorColor={authorColor}
       authorAvatarHash=""
       serverId={null}
       proxy={proxyValue}
@@ -382,5 +387,142 @@ describe("MessageItem picture copy", () => {
     await userEvent.keyboard("{Enter}");
 
     await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("MessageItem author menu", () => {
+  beforeEach(() => {
+    void i18n.changeLanguage("ru");
+    useAppStore.setState({ userMenu: null });
+    // The author has to exist in the same user list UserContextMenu resolves.
+    useCoreStore.setState({
+      state: structuredClone(fixtureState),
+      hydrated: true,
+      pending: [],
+    });
+  });
+
+  afterEach(() => {
+    useAppStore.setState({ userMenu: null });
+  });
+
+  it("opens the user context menu for the sender at the click point", () => {
+    render(messageItem([]));
+    const author = screen.getByTestId("message-author");
+    expect(author).toHaveAccessibleName(
+      i18n.t("userMenu.title", { name: "Anya" }),
+    );
+
+    fireEvent.click(author, { clientX: 42, clientY: 17 });
+
+    expect(useAppStore.getState().userMenu).toEqual({
+      userId: 2,
+      x: 42,
+      y: 17,
+    });
+  });
+
+  it("activates from the keyboard and keeps the role color", async () => {
+    render(messageItem([], 2, proxy, "#ff8800"));
+    const author = screen.getByTestId("message-author");
+    // `roleNameStyle` mixes the role colour with the theme foreground.
+    expect(author.getAttribute("style")).toContain("#ff8800");
+
+    author.focus();
+    expect(author).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+
+    expect(useAppStore.getState().userMenu?.userId).toBe(2);
+  });
+
+  it("renders a plain name without an action for an offline author", () => {
+    useCoreStore.setState({
+      state: { ...structuredClone(fixtureState), users: [] },
+      hydrated: true,
+      pending: [],
+    });
+    render(messageItem([]));
+
+    expect(screen.queryByTestId("message-author")).not.toBeInTheDocument();
+    const name = screen.getByTestId("message-author-offline");
+    expect(name.tagName).toBe("SPAN");
+    fireEvent.click(name);
+    expect(useAppStore.getState().userMenu).toBeNull();
+  });
+});
+
+describe("MessageItem body mentions", () => {
+  beforeEach(() => {
+    void i18n.changeLanguage("ru");
+    useAppStore.setState({ userMenu: null });
+    useCoreStore.setState({
+      state: structuredClone(fixtureState),
+      hydrated: true,
+      pending: [],
+    });
+  });
+
+  afterEach(() => {
+    useAppStore.setState({ userMenu: null });
+  });
+
+  it("links a confirmed mention and opens the menu at the click point", () => {
+    render(
+      messageItem([], 2, proxy, null, {
+        body: "привет @Anya",
+        mentionUserIds: [2],
+      }),
+    );
+    const mention = screen.getByRole("button", { name: "@Anya" });
+    expect(mention.className).toContain("text-accent");
+
+    fireEvent.click(mention, { clientX: 31, clientY: 47 });
+
+    expect(useAppStore.getState().userMenu).toEqual({
+      userId: 2,
+      x: 31,
+      y: 47,
+    });
+  });
+
+  it("activates a mention from the keyboard", async () => {
+    render(
+      messageItem([], 2, proxy, null, {
+        body: "привет @Anya",
+        mentionUserIds: [2],
+      }),
+    );
+    const mention = screen.getByRole("button", { name: "@Anya" });
+    mention.focus();
+    await userEvent.keyboard("{Enter}");
+
+    expect(useAppStore.getState().userMenu?.userId).toBe(2);
+  });
+
+  it("keeps an unknown nickname plain", () => {
+    render(
+      messageItem([], 2, proxy, null, {
+        body: "привет @Bob",
+        mentionUserIds: [2],
+      }),
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "@Bob" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("message-body")).toHaveTextContent("привет @Bob");
+  });
+
+  it("keeps a known name plain when its id is not a confirmed mention", () => {
+    render(
+      messageItem([], 2, proxy, null, {
+        body: "привет @Anya",
+        mentionUserIds: [],
+      }),
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "@Anya" }),
+    ).not.toBeInTheDocument();
   });
 });

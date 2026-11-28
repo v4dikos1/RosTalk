@@ -1,6 +1,6 @@
 [package]
 name = "rostalk-server-setup"
-version = "0.3.3"
+version = "0.3.4"
 description = "RosTalk server installer for Windows: installs rostalk-server on a Linux VPS over SSH (P13, ADR 0026)"
 edition = "2021"
 license = "MIT"

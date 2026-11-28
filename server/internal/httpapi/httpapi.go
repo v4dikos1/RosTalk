@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	rostalkv1 "github.com/v4dikos1/RosTalk/proto/gen/go/rostalk/v1"
@@ -23,6 +24,7 @@ import (
 	"github.com/v4dikos1/RosTalk/server/internal/channels"
 	"github.com/v4dikos1/RosTalk/server/internal/chat"
 	"github.com/v4dikos1/RosTalk/server/internal/control"
+	"github.com/v4dikos1/RosTalk/server/internal/newyear"
 	"github.com/v4dikos1/RosTalk/server/internal/perms"
 	"github.com/v4dikos1/RosTalk/server/internal/roles"
 	"github.com/v4dikos1/RosTalk/server/internal/sessionauth"
@@ -45,6 +47,11 @@ type Config struct {
 	Sessions *sessionauth.Registry
 	// Now overrides the clock in tests.
 	Now func() time.Time
+	// NewYear enables the New Year event routes; nil leaves them unregistered.
+	NewYear *newyear.Service
+	// NewYearVisible reports whether the viewer may open the target's tree:
+	// the target is online and in a channel the viewer can see.
+	NewYearVisible func(viewer, target int64) bool
 }
 
 // Server implements http.Handler.
@@ -57,6 +64,11 @@ type Server struct {
 	logger   *slog.Logger
 	now      func() time.Time
 	mux      *http.ServeMux
+
+	newYear        *newyear.Service
+	newYearVisible func(viewer, target int64) bool
+	newYearMu      sync.Mutex
+	newYearBuckets map[int64]*newYearBucket
 }
 
 // New validates the wiring and builds the router.
@@ -87,13 +99,13 @@ func New(cfg Config) (*Server, error) {
 		logger:   logger,
 		now:      now,
 		mux:      http.NewServeMux(),
+
+		newYear:        cfg.NewYear,
+		newYearVisible: cfg.NewYearVisible,
 	}
 	s.routes()
 	return s, nil
 }
-
-// Handler returns the router.
-func (s *Server) Handler() http.Handler { return s.mux }
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/users", s.handleUsers)

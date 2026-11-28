@@ -1,0 +1,26 @@
+.new-year-game .ny-reel-panel { display: grid; gap: 12px; max-width: 520px; margin: auto; }
+.new-year-game .ny-reel { position: relative; overflow: hidden; height: 76px; border: 1px solid #d7a454; border-radius: 8px; background: #102235; }
+.new-year-game .ny-reel::after { content: ""; position: absolute; left: 50%; top: 0; height: 100%; border-left: 2px solid #d7a454; pointer-events: none; }
+.new-year-game .ny-reel-track { display: flex; justify-content: center; gap: 8px; height: 100%; align-items: center; }
+.new-year-game .ny-reel-reveal { animation: ny-reel-reveal 150ms ease-out; }
+@keyframes ny-reel-reveal { from { transform: translateX(72px); } to { transform: translateX(0); } }
+@media (prefers-reduced-motion: reduce) { .new-year-game .ny-reel-reveal { animation: none; } }
+.new-year-game .ny-reel-card { width: 64px; height: 64px; flex: none; }
+.new-year-game .ny-rarity-common { color: #aebec5; }
+.new-year-game .ny-rarity-rare { color: #70b9ef; }
+.new-year-game .ny-rarity-epic { color: #d4a5ed; }
+.new-year-game .ny-rarity-legendary { color: #eac177; }
+.new-year-game .ny-reel-panel { max-width: 720px; gap: 20px; padding: 16px 4px; }
+.new-year-game .ny-reel-heading { display: flex; justify-content: space-between; align-items: end; gap: 16px; }
+.new-year-game .ny-reel-heading h2 { margin: 4px 0 0; font-size: 22px; font-weight: 600; }
+.new-year-game .ny-eyebrow, .new-year-game .ny-balance { display: flex; align-items: center; gap: 6px; color: #c4d5d8; font-size: 12px; }
+.new-year-game .ny-eyebrow svg, .new-year-game .ny-balance svg { color: #d7a454; }
+.new-year-game .ny-reel { height: 104px; border-color: #d7a45466; background: #091927; box-shadow: inset 0 0 24px #0008; }
+.new-year-game .ny-reel::before { content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none; background: linear-gradient(90deg, #091927, transparent 18%, transparent 82%, #091927); }
+.new-year-game .ny-reel::after { z-index: 2; top: 0; height: 100%; border-left-color: #d7a454; }
+.new-year-game .ny-reel-track { width: max-content; position: relative; left: 50%; margin-left: -536px; }
+.new-year-game .ny-reel-card { border: 1px solid #aabdc455; border-radius: 9px; background: #203646; }
+.new-year-game .ny-border-rare { border-color: #77b8d688; }.new-year-game .ny-border-epic { border-color: #b3a0cd88; }.new-year-game .ny-border-legendary { border-color: #d7a454aa; }
+.new-year-game .ny-reel-result { display: flex; align-items: center; gap: 12px; min-height: 88px; padding: 12px; border: 1px solid #d7a45440; border-radius: 10px; background: #172d3c; }
+.new-year-game .ny-reel-result p { margin: 0; }.new-year-game .ny-result-art { width: 64px; height: 64px; flex: none; }
+.new-year-game .ny-reel-actions { display: flex; gap: 8px; }

@@ -578,6 +578,7 @@ export type ClientSettings_Deserialize = {
 	appearance: AppearanceSettings_Deserialize,
 	/**  Local diagnostics consent and nothing else. */
 	diagnostics: DiagnosticsSettings_Deserialize,
+	plugins: PluginSettings,
 	voice: VoiceSettings_Deserialize,
 	participants: ParticipantSettings[],
 };
@@ -635,6 +636,7 @@ export type ClientSettings_Serialize = {
 	appearance: AppearanceSettings_Serialize,
 	/**  Local diagnostics consent and nothing else. */
 	diagnostics: DiagnosticsSettings_Serialize,
+	plugins: PluginSettings,
 	voice: VoiceSettings_Serialize,
 	participants: ParticipantSettings[],
 };
@@ -1365,6 +1367,8 @@ export type NativeStreamSupport_Serialize = {
 	reason: string | null,
 };
 
+export type NewYearPluginState = "absent" | "enabled" | "disabled";
+
 /**  Which noise suppressor runs on the capture path (stage 2.3.2e). */
 export type NoiseModel = 
 /**  No noise suppression. */
@@ -1430,6 +1434,10 @@ export type PingReply = {
 	protocolVersion: number,
 	/**  Desktop client version from `Cargo.toml`. */
 	clientVersion: string,
+};
+
+export type PluginSettings = {
+	newYear: NewYearPluginState,
 };
 
 /**  Which APM stages are on. Every stage is switchable (design 5.2). */

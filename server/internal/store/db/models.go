@@ -107,6 +107,69 @@ type MessageMention struct {
 	UserID    int64
 }
 
+type NyDay struct {
+	Season      string
+	UserID      int64
+	Day         string
+	ClaimedItem sql.NullString
+	Watered     int64
+	VoiceFlakes int64
+	ChatFlakes  int64
+}
+
+type NyInventory struct {
+	Season string
+	UserID int64
+	Item   string
+	Qty    int64
+}
+
+type NyLayout struct {
+	Season   string
+	UserID   int64
+	Slot     int64
+	Item     string
+	X        int64
+	Y        int64
+	Scale    int64
+	Rotation int64
+}
+
+type NyLedger struct {
+	ID     int64
+	Season string
+	UserID int64
+	UtcMs  int64
+	Kind   string
+	Delta  int64
+	Source string
+}
+
+type NyPlayer struct {
+	Season        string
+	UserID        int64
+	EnrolledMs    int64
+	Water         int64
+	Flakes        int64
+	Background    string
+	LayoutVersion int64
+	LastChatMs    sql.NullInt64
+}
+
+type NySeason struct {
+	Season string
+	Zone   string
+}
+
+type NySpin struct {
+	Season    string
+	UserID    int64
+	RequestID string
+	Item      string
+	Duplicate int64
+	Refund    int64
+}
+
 type ReadMarker struct {
 	UserID            int64
 	ChannelID         int64

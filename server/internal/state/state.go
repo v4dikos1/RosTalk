@@ -162,6 +162,7 @@ type Session struct {
 	admin     bool
 	roleIDs   []int64
 	channelID uint64
+	tenure    uint64 // protected by the Hub lock
 	voice     VoiceState
 	streaming bool
 	// watching lists the screen shares the user watches, by streamer id. It is
@@ -466,6 +467,7 @@ type Hub struct {
 
 	sessions map[int64]*Session
 	order    []int64
+	tenure   uint64
 
 	maxUsers   uint32
 	queueSize  int
@@ -539,6 +541,9 @@ func (h *Hub) Register(s *Session) (*Session, error) {
 		// if the user closed the tile while the socket was down.
 		s.watching = append([]uint64(nil), previous.Watching...)
 		s.mu.Unlock()
+		s.tenure = old.tenure
+	} else {
+		h.renewTenureLocked(s)
 	}
 
 	h.sessions[s.UserID()] = s
@@ -598,6 +603,55 @@ func (h *Hub) SnapshotUsers() []Presence {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.presencesLocked()
+}
+
+// VoiceActivity is the control-plane identity of an eligible channel stay.
+type VoiceActivity struct {
+	UserID    int64
+	ChannelID uint64
+	Tenure    uint64
+}
+
+func (h *Hub) SnapshotVoiceActivity() []VoiceActivity {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.channels == nil {
+		return nil
+	}
+	result := make([]VoiceActivity, 0, len(h.sessions))
+	eligible := make(map[uint64]bool)
+	for id, s := range h.sessions {
+		channelID := s.ChannelID()
+		if channelID == 0 {
+			continue
+		}
+		ok, checked := eligible[channelID]
+		if !checked {
+			ch, found := h.channels.View(channelID)
+			ok = found && ch.GetKind() == rostalkv1.ChannelKind_CHANNEL_KIND_VOICE && !ch.GetAfk()
+			eligible[channelID] = ok
+		}
+		if ok {
+			result = append(result, VoiceActivity{UserID: id, ChannelID: channelID, Tenure: s.tenure})
+		}
+	}
+	return result
+}
+
+// InvalidateVoiceActivity breaks tenure for all occupants across an eligibility change.
+func (h *Hub) InvalidateVoiceActivity(channelID uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, s := range h.sessions {
+		if s.ChannelID() == channelID {
+			h.renewTenureLocked(s)
+		}
+	}
+}
+
+func (h *Hub) renewTenureLocked(s *Session) {
+	h.tenure++
+	s.tenure = h.tenure
 }
 
 // Presence returns a copy of one online user.
@@ -756,6 +810,7 @@ func (h *Hub) EvictFromChannels(channelIDs []uint64) []int64 {
 		}
 		s.mu.Lock()
 		s.channelID = 0
+		h.renewTenureLocked(s)
 		streamReset := s.streaming
 		s.streaming = false
 		watchingReset := len(s.watching) > 0
@@ -855,6 +910,7 @@ func (h *Hub) moveLocked(userID int64, channelID uint64, userLimit uint32) (Move
 	}
 	s.mu.Lock()
 	s.channelID = channelID
+	h.renewTenureLocked(s)
 	// A screen share belongs to one voice channel: leaving it or moving to
 	// another one invalidates the media participant, so the flag must not
 	// follow the user and leave a phantom LIVE badge behind.

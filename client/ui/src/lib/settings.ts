@@ -4,6 +4,7 @@ import type {
   HotkeyAction,
   HotkeyBinding,
   ParticipantSettings,
+  PluginSettings,
   VoiceSettings,
 } from "@/core/api";
 import {
@@ -15,7 +16,7 @@ import {
 
 /** Mirrors the Rust defaults so a failed `getSettings` still renders. */
 export const DEFAULT_SETTINGS: ClientSettings = {
-  version: 3,
+  version: 4,
   theme: "dark",
   locale: "ru",
   compact: false,
@@ -30,6 +31,7 @@ export const DEFAULT_SETTINGS: ClientSettings = {
   selfDeafened: false,
   appearance: DEFAULT_APPEARANCE,
   diagnostics: { consent: "undecided" },
+  plugins: { newYear: "absent" },
   updateSource: null,
   autostart: false,
   voice: {
@@ -146,13 +148,14 @@ export function participantKey(
 /** A patch of the settings; the nested sections are merged, not replaced. */
 export type SettingsPatch = Omit<
   Partial<ClientSettings>,
-  "appearance" | "voice"
+  "appearance" | "plugins" | "voice"
 > & {
   appearance?: Partial<AppearanceSettings>;
+  plugins?: Partial<PluginSettings>;
   voice?: Partial<VoiceSettings>;
 };
 
-/** Applies a shallow patch, merging `appearance` and `voice` deeply. */
+/** Applies a patch while preserving unchanged nested settings. */
 export function mergeSettings(
   current: ClientSettings,
   patch: SettingsPatch,
@@ -163,6 +166,7 @@ export function mergeSettings(
     appearance: patch.appearance
       ? mergeAppearance(current.appearance, patch.appearance)
       : current.appearance,
+    plugins: { ...current.plugins, ...patch.plugins },
     voice: patch.voice
       ? mergeVoiceSettings(current.voice, patch.voice)
       : current.voice,
@@ -211,11 +215,15 @@ export function clampSettings(settings: ClientSettings): ClientSettings {
           Math.max(-80, Math.round(settings.voice.activationThresholdDb ?? -45)),
         );
   const appearance = normalizeAppearance(settings.appearance, settings.theme);
+  const newYear = settings.plugins?.newYear;
   return {
     ...settings,
     // The appearance section is the source of truth; these two stay for the
     // tray, the window title and an older UI bundle.
     appearance,
+    plugins: {
+      newYear: newYear === "enabled" || newYear === "disabled" ? newYear : "absent",
+    },
     theme: presetTheme(appearance.preset),
     compact: appearance.density === "compact",
     nickname: settings.nickname.trim().slice(0, 64),

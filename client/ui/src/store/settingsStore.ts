@@ -1,7 +1,12 @@
 import { create } from "zustand";
 
 import { coreApi } from "@/core";
-import type { ClientSettings, CoreError, VoiceSettings } from "@/core/api";
+import type {
+  ClientSettings,
+  CoreError,
+  NewYearPluginState,
+  VoiceSettings,
+} from "@/core/api";
 import { asCoreError } from "@/lib/coreError";
 import { applyDebugSettings } from "@/lib/debug";
 import {
@@ -24,7 +29,10 @@ interface SettingsMirror {
   settings: ClientSettings | null;
   loaded: boolean;
   error: CoreError | null;
-  /** Last successfully persisted settings, used to roll back a failure. */
+  /** Last New Year state confirmed by the core. */
+  persistedNewYear: NewYearPluginState;
+  /** A pending enable waits for persistence while an optimistic off acts immediately. */
+  newYearUpdatePending: boolean;
   hydrate: () => Promise<void>;
   update: (patch: SettingsPatch) => Promise<void>;
   updateVoice: (patch: Partial<VoiceSettings>) => Promise<void>;
@@ -35,6 +43,7 @@ interface SettingsMirror {
 }
 
 let writeChain: Promise<void> = Promise.resolve();
+let pendingNewYear: ClientSettings | null = null;
 
 function setAndSync(next: ClientSettings) {
   useSettingsStore.setState({ settings: next, error: null });
@@ -44,6 +53,8 @@ export const useSettingsStore = create<SettingsMirror>()((set, get) => ({
   settings: null,
   loaded: false,
   error: null,
+  persistedNewYear: "absent",
+  newYearUpdatePending: false,
 
   hydrate: async () => {
     try {
@@ -57,12 +68,18 @@ export const useSettingsStore = create<SettingsMirror>()((set, get) => ({
           // Keep the loaded settings; the button can be pressed again.
         }
       }
-      set({ settings, loaded: true, error: null });
+      set({
+        settings,
+        persistedNewYear: settings.plugins.newYear,
+        loaded: true,
+        error: null,
+      });
     } catch (error) {
       // A broken settings file must not block the interface; the defaults are
       // the same values the Rust core uses.
       set({
         settings: applyDebugSettings(structuredClone(DEFAULT_SETTINGS)),
+        persistedNewYear: "absent",
         loaded: true,
         error: asCoreError(error),
       });
@@ -75,8 +92,12 @@ export const useSettingsStore = create<SettingsMirror>()((set, get) => ({
       return;
     }
     const next = mergeSettings(current, patch);
-    setAndSync(next);
-    await enqueue(next, next.voice, set);
+    const newYear = patch.plugins?.newYear;
+    if (newYear !== undefined) {
+      pendingNewYear = next;
+    }
+    set({ settings: next, newYearUpdatePending: pendingNewYear !== null, error: null });
+    await enqueue(next, newYear);
   },
 
   updateVoice: async (patch) => {
@@ -86,7 +107,7 @@ export const useSettingsStore = create<SettingsMirror>()((set, get) => ({
     }
     const next = mergeSettings(current, { voice: { ...current.voice, ...patch } });
     setAndSync(next);
-    await enqueue(next, next.voice, set);
+    await enqueue(next);
   },
 
   setParticipant: async (key, volume, muted) => {
@@ -130,24 +151,50 @@ export const useSettingsStore = create<SettingsMirror>()((set, get) => ({
 
 async function enqueue(
   next: ClientSettings,
-  _voice: VoiceSettings,
-  set: (partial: Partial<SettingsMirror>) => void,
+  newYear?: NewYearPluginState,
 ): Promise<void> {
   writeChain = writeChain.then(async () => {
+    const { getState, setState } = useSettingsStore;
     try {
-      const saved = await coreApi.updateSettings(next);
-      const latest = useSettingsStore.getState().settings;
-      // Keep newer optimistic edits that happened while the write was running.
-      if (latest && latest !== next) {
-        useSettingsStore.setState({ settings: { ...latest }, error: null });
-      } else {
-        useSettingsStore.setState({ settings: clampSettings(saved), error: null });
+      // A queued edit to another setting must not retry a rejected enable.
+      const remote = await coreApi.updateSettings({
+        ...next,
+        plugins: { newYear: newYear ?? getState().persistedNewYear },
+      });
+      const saved = clampSettings(remote);
+      const latest = getState().settings;
+      if (pendingNewYear === next) {
+        pendingNewYear = null;
       }
+      // Keep newer optimistic edits that happened while the write was running.
+      setState({
+        settings: latest && latest !== next ? latest : saved,
+        persistedNewYear: saved.plugins.newYear,
+        newYearUpdatePending: pendingNewYear !== null,
+        error: null,
+      });
     } catch (error) {
-      set({ error: asCoreError(error) });
-      // The core rejected the value: resynchronise instead of keeping a
-      // configuration that was never persisted.
-      void useSettingsStore.getState().hydrate();
+      const failure = asCoreError(error);
+      setState({ error: failure });
+      const remote = await coreApi.getSettings().catch(() => null);
+      const latest = getState();
+      const saved = remote ? applyDebugSettings(clampSettings(remote)) : null;
+      const persistedNewYear = saved?.plugins.newYear ?? latest.persistedNewYear;
+      if (pendingNewYear === next) {
+        pendingNewYear = null;
+      }
+      let settings = latest.settings;
+      if (settings === next && saved) {
+        settings = saved;
+      } else if (settings && pendingNewYear === null && settings.plugins.newYear !== persistedNewYear) {
+        settings = { ...settings, plugins: { newYear: persistedNewYear } };
+      }
+      setState({
+        settings,
+        persistedNewYear,
+        newYearUpdatePending: pendingNewYear !== null,
+        error: failure,
+      });
     }
   });
   await writeChain;

@@ -1,0 +1,42 @@
+import { expect, test } from "@playwright/test";
+import { createServer, type ViteDevServer } from "vite";
+
+let server: ViteDevServer;
+type FixtureWindow = Window & { nyFixture: { mount: (options: object) => Promise<void> } };
+test.beforeAll(async () => { server = await createServer({ configFile: "vite.config.ts", server: { host: "127.0.0.1", port: 1431, strictPort: true } }); await server.listen(); });
+test.afterAll(async () => { await server.close(); });
+test("keyboard placement and public tree", async ({ page }, testInfo) => {
+  await page.goto("http://127.0.0.1:1431/");
+  await page.evaluate(() => { document.body.innerHTML = ""; });
+  await page.addScriptTag({ type: "module", url: "/src/features/new-year/GameRoot.fixture.tsx" });
+  await page.waitForFunction(() => "nyFixture" in window);
+  await page.evaluate(() => (window as unknown as FixtureWindow).nyFixture.mount({ state: { inventory: [{ itemId: "ball-red", qty: 1 }] } }));
+  await page.getByRole("tab", { name: "Tree" }).click();
+  await page.getByTestId("new-year-game").screenshot({ path: testInfo.outputPath("before.png"), animations: "disabled" });
+  const item = page.getByRole("button", { name: /Red bauble/ });
+  await item.click(); await item.focus(); await page.keyboard.press("Enter");
+  await expect(page.locator(".ny-placement")).toHaveCount(1);
+  await page.getByTestId("new-year-game").screenshot({ path: testInfo.outputPath("editor.png"), animations: "disabled" });
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await page.getByTestId("new-year-game").screenshot({ path: testInfo.outputPath("saved.png"), animations: "disabled" });
+  await page.getByRole("tab", { name: "Calendar" }).click();
+  await page.getByRole("tab", { name: "Tree" }).click();
+  await expect(page.locator(".ny-placement")).toHaveCount(1);
+  await page.getByTestId("new-year-game").screenshot({ path: testInfo.outputPath("reopened.png"), animations: "disabled" });
+  await page.evaluate(() => (window as unknown as FixtureWindow).nyFixture.mount({ target: { kind: "peer", userId: 11, nickname: "Test" } }));
+  await expect(page.locator(".ny-placement")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
+  await page.getByTestId("new-year-game").screenshot({ path: testInfo.outputPath("peer.png"), animations: "disabled" });
+});
+test("reel reveals the receipt", async ({ page }, testInfo) => {
+  await page.goto("http://127.0.0.1:1431/");
+  await page.evaluate(() => { document.body.innerHTML = ""; });
+  await page.addScriptTag({ type: "module", url: "/src/features/new-year/GameRoot.fixture.tsx" });
+  await page.waitForFunction(() => "nyFixture" in window);
+  await page.evaluate(() => (window as unknown as FixtureWindow).nyFixture.mount({ state: { flakes: 6 } }));
+  await page.getByRole("tab", { name: "Reel" }).click();
+  await page.getByRole("button", { name: "Open for 6 flakes" }).click();
+  await expect(page.getByText(/You received:/)).toBeVisible();
+  await page.getByTestId("new-year-game").screenshot({ path: testInfo.outputPath("reel.png"), animations: "disabled" });
+});

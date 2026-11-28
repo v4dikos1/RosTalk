@@ -109,6 +109,9 @@ type Plane struct {
 	// the server's idle channel, so leaving restores their own preference
 	// (ADR 0009). An entry exists only while the user is in such a channel.
 	afkSelfMuted map[int64]bool
+
+	// Keep eligibility edits and activity observations ordered without holding the Hub lock through SQL.
+	activityMu sync.Mutex
 }
 
 // New validates the wiring.
@@ -1074,7 +1077,7 @@ func (p *Plane) UpdateChannel(ctx context.Context, id int64, params channels.Upd
 			return channels.Channel{}, ErrChannelOccupied
 		}
 	}
-	channel, err := p.channels.Update(ctx, id, params)
+	channel, err := p.updateChannelActivity(ctx, id, params)
 	if err != nil {
 		return channels.Channel{}, err
 	}
@@ -1100,6 +1103,26 @@ func (p *Plane) UpdateChannel(ctx context.Context, id int64, params channels.Upd
 	p.syncIdleChannel(ctx, channel)
 	p.broadcastAllChannelsUpdated()
 	return channel, nil
+}
+
+func (p *Plane) updateChannelActivity(ctx context.Context, id int64, params channels.UpdateParams) (channels.Channel, error) {
+	if params.AFK == nil && params.Kind == nil {
+		return p.channels.Update(ctx, id, params)
+	}
+	p.activityMu.Lock()
+	defer p.activityMu.Unlock()
+	previous, ok := p.channels.Get(id)
+	channel, err := p.channels.Update(ctx, id, params)
+	if err == nil && ok && (previous.AFK != channel.AFK || previous.Kind != channel.Kind) {
+		p.hub.InvalidateVoiceActivity(uint64(id))
+	}
+	return channel, err
+}
+
+func (p *Plane) SnapshotVoiceActivity() []state.VoiceActivity {
+	p.activityMu.Lock()
+	defer p.activityMu.Unlock()
+	return p.hub.SnapshotVoiceActivity()
 }
 
 // syncIdleChannel applies or lifts the idle-channel policy for everyone who is

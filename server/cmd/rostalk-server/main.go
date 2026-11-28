@@ -84,6 +84,8 @@ Every flag has an environment variable equivalent:
   --log-file             ROSTALK_LOG_FILE
   --log-max-size         ROSTALK_LOG_MAX_SIZE
   --log-keep             ROSTALK_LOG_KEEP
+  --new-year-disabled    ROSTALK_NEW_YEAR_DISABLED
+  --new-year-tz          ROSTALK_NEW_YEAR_TZ
 `
 
 func main() {
@@ -188,6 +190,10 @@ type runConfig struct {
 	// logMaxSize and logKeep configure the rotation of logFile.
 	logMaxSize int64
 	logKeep    int
+	// newYearDisabled leaves the New Year event out of this server.
+	newYearDisabled bool
+	// newYearTZ is the IANA timezone of the event calendar.
+	newYearTZ string
 }
 
 func parseRunConfig(args []string, stderr io.Writer) (runConfig, error) {
@@ -199,7 +205,13 @@ func parseRunConfig(args []string, stderr io.Writer) (runConfig, error) {
 	if err != nil {
 		return runConfig{}, err
 	}
+	envNewYearOff, err := envBool("ROSTALK_NEW_YEAR_DISABLED", false)
+	if err != nil {
+		return runConfig{}, err
+	}
 	cfg := runConfig{
+		newYearDisabled:         envNewYearOff,
+		newYearTZ:               envString("ROSTALK_NEW_YEAR_TZ", ""),
 		dataDir:                 envString("ROSTALK_DATA", "./data"),
 		adminSocket:             envString("ROSTALK_ADMIN_SOCKET", ""),
 		listen:                  envString("ROSTALK_LISTEN", ":7443"),
@@ -267,6 +279,10 @@ func parseRunConfig(args []string, stderr io.Writer) (runConfig, error) {
 		"rotate the log file after this many bytes (ROSTALK_LOG_MAX_SIZE)")
 	fs.IntVar(&cfg.logKeep, "log-keep", cfg.logKeep,
 		"how many rotated log files to keep (ROSTALK_LOG_KEEP)")
+	fs.BoolVar(&cfg.newYearDisabled, "new-year-disabled", cfg.newYearDisabled,
+		"leave the New Year event out: no routes, hooks or loop (ROSTALK_NEW_YEAR_DISABLED)")
+	fs.StringVar(&cfg.newYearTZ, "new-year-tz", cfg.newYearTZ,
+		"IANA timezone of the New Year calendar; empty uses TZ, then UTC; fixed per season on first start (ROSTALK_NEW_YEAR_TZ)")
 
 	if err := fs.Parse(args); err != nil {
 		return runConfig{}, err
@@ -707,6 +723,8 @@ func runServer(cfg runConfig, stdout, stderr io.Writer) error {
 		MetricsAddr:             cfg.metricsAddr,
 		Version:                 version.String(),
 		Logger:                  logger,
+		NewYearDisabled:         cfg.newYearDisabled,
+		NewYearTZ:               cfg.newYearTZ,
 	})
 	if err != nil {
 		return err

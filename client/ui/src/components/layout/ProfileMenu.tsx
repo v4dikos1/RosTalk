@@ -43,6 +43,8 @@ export function ProfileMenu() {
   const levels = useVoiceStore((store) => store.levels);
   const openSettings = useAppStore((store) => store.openSettings);
   const openServerList = useAppStore((store) => store.openServerList);
+  const openNewYear = useAppStore((store) => store.openNewYear);
+  const gameEnabled = useSettingsStore((store) => store.persistedNewYear === "enabled" && store.settings?.plugins.newYear === "enabled");
   const [open, setOpen] = useState(false);
 
   const self = state?.users.find((user) => user.id === state.selfUserId);
@@ -202,6 +204,7 @@ export function ProfileMenu() {
             testId="profile-menu-settings"
             onClick={() => choose("settings")}
           />
+          {connected && gameEnabled && <MenuItem icon={UserRound} label={t("newYearShell.tree")} testId="profile-menu-new-year" onClick={() => { setOpen(false); openNewYear({ kind: "self" }); }} />}
           <MenuItem
             icon={ArrowLeftRight}
             label={t("profileMenu.switchServer")}

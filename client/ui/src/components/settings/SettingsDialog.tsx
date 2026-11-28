@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   Download,
   Fingerprint,
   Info,
@@ -21,9 +22,19 @@ import { useTranslation } from "react-i18next";
 import { UserAvatar } from "@/components/common/UserAvatar";
 import { AvatarDialog } from "@/components/profile/AvatarDialog";
 import { AppearanceSection } from "@/components/settings/AppearanceSection";
+import {
+  SCOPED_ACTIONS,
+  hotkeyScope,
+  isScopedAction,
+  isUsableAccelerator,
+  type HotkeyScope,
+  type ScopedHotkeyAction,
+} from "@/components/settings/hotkeyScope";
+import { PluginSettings } from "@/plugins/new-year/PluginSettings";
 import { DiagnosticsSection } from "@/components/settings/DiagnosticsSection";
 import { SettingRow, SectionTitle } from "@/components/settings/SettingsPrimitives";
 import { LevelMeter } from "@/components/voice/LevelMeter";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -80,6 +91,7 @@ const sections: {
   { id: "identity", icon: Fingerprint },
   { id: "diagnostics", icon: ScrollText },
   { id: "updates", icon: Download },
+  { id: "plugins", icon: Play },
   { id: "about", icon: Info },
 ];
 
@@ -125,7 +137,7 @@ function ProfileSection() {
             aria-label={t("avatar.change")}
             title={t("avatar.change")}
             data-testid="settings-avatar-preview"
-            className="rounded-full transition-opacity duration-150 hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-raised"
+            className="rounded-full transition-opacity duration-150 hover:opacity-90"
           >
             <UserAvatar
               name={self?.nickname || nickname || "?"}
@@ -748,6 +760,40 @@ const hotkeyLabelKey: Record<HotkeyAction, string> = {
   leaveChannel: "voice.hotkeys.leaveChannel",
 };
 
+const scopeBadgeClass: Record<HotkeyScope, string> = {
+  global: "border-success/40 bg-success/10 text-success",
+  window: "border-warning/40 bg-warning/10 text-warning",
+  unset: "border-border text-faint",
+  unavailable: "border-danger/40 bg-danger/10 text-danger",
+};
+
+/**
+ * Effective scope of one background action (P33). The `title` carries the
+ * concise explanation, or the core's own reason when the action cannot run.
+ */
+function HotkeyScopeBadge({
+  action,
+  scope,
+  reason,
+}: {
+  action: ScopedHotkeyAction;
+  scope: HotkeyScope;
+  reason?: string | undefined;
+}) {
+  const { t } = useTranslation();
+  return (
+    <Badge
+      variant="outline"
+      data-testid={`hotkey-scope-${action}`}
+      data-scope={scope}
+      title={reason ?? t(`voice.hotkeys.scope.${scope}Hint`)}
+      className={cn("shrink-0", scopeBadgeClass[scope])}
+    >
+      {t(`voice.hotkeys.scope.${scope}`)}
+    </Badge>
+  );
+}
+
 function HotkeysSection() {
   const { t } = useTranslation();
   const settings = useSettingsStore((store) => store.settings);
@@ -816,6 +862,44 @@ function HotkeysSection() {
     return null;
   }
 
+  const hotkeyBindings = settings.voice.hotkeys;
+  const scoped = SCOPED_ACTIONS.map((action) => {
+    const accelerator =
+      hotkeyBindings.find((binding) => binding.action === action)?.accelerator ??
+      null;
+    const scope = hotkeyScope({
+      action,
+      accelerator,
+      globalInput: voice?.globalInput,
+    });
+    let reason: string | undefined;
+    if (scope === "unavailable") {
+      if (!isUsableAccelerator(accelerator)) {
+        reason = t("voice.hotkeys.scope.invalidReason");
+      } else if (action === "pushToTalk" && voice?.pushToTalk.error) {
+        reason = voice.pushToTalk.error;
+      } else if (
+        action === "pushToTalk" &&
+        voice?.pushToTalk.hook === "unsupported"
+      ) {
+        reason = t("voice.hotkeys.scope.unsupportedReason");
+      } else {
+        reason = t("voice.hotkeys.scope.unavailableReason");
+      }
+    }
+    return { action, accelerator, scope, reason };
+  });
+  const scopeOf = new Map(scoped.map((item) => [item.action, item]));
+  const windowOnly = scoped.filter((item) => item.scope === "window");
+  const pttUnavailable = scoped.some(
+    (item) => item.action === "pushToTalk" && item.scope === "unavailable",
+  );
+  // One click, never automatic: a chord is only installed after the user
+  // deliberately allows background capture (ADR 0012).
+  const showEnableBackground =
+    !settings.voice.backgroundHotkeys &&
+    scoped.some((item) => needsBackgroundOptIn(item.accelerator));
+
   return (
     <div>
       <SectionTitle>{t("voice.hotkeys.title")}</SectionTitle>
@@ -836,6 +920,23 @@ function HotkeysSection() {
           data-testid="settings-background-hotkeys"
         />
       </SettingRow>
+      {showEnableBackground ? (
+        <div
+          data-testid="hotkeys-background-callout"
+          className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-accent/40 bg-accent/10 p-2"
+        >
+          <Button
+            size="sm"
+            data-testid="hotkeys-enable-background"
+            onClick={() => void updateVoice({ backgroundHotkeys: true })}
+          >
+            {t("voice.hotkeys.enableBackground")}
+          </Button>
+          <span className="text-[11px] text-muted">
+            {t("voice.hotkeys.enableBackgroundHint")}
+          </span>
+        </div>
+      ) : null}
       {voice?.pushToTalk.hook === "unavailable" && voice.pushToTalk.error ? (
         <p
           role="alert"
@@ -853,16 +954,28 @@ function HotkeysSection() {
       ) : null}
       <div className="divide-y divide-border rounded-md border border-border">
         {HOTKEY_ACTIONS.map((action) => {
-          const binding = settings.voice.hotkeys.find(
+          const binding = hotkeyBindings.find(
             (item) => item.action === action,
           );
+          const scopeItem = isScopedAction(action)
+            ? scopeOf.get(action)
+            : undefined;
           return (
             <div
               key={action}
               className="flex items-center justify-between gap-3 px-3 py-2"
             >
-              <span className="text-[12px] text-foreground">
-                {t(hotkeyLabelKey[action])}
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-[12px] text-foreground">
+                  {t(hotkeyLabelKey[action])}
+                </span>
+                {scopeItem ? (
+                  <HotkeyScopeBadge
+                    action={scopeItem.action}
+                    scope={scopeItem.scope}
+                    reason={scopeItem.reason}
+                  />
+                ) : null}
               </span>
               <button
                 type="button"
@@ -890,13 +1003,17 @@ function HotkeysSection() {
           );
         })}
       </div>
-      {needsBackgroundOptIn(
-        settings.voice.hotkeys.find(
-          (binding) => binding.action === "pushToTalk",
-        )?.accelerator ?? null,
-      ) && !settings.voice.backgroundHotkeys ? (
-        <p role="alert" className="mt-2 text-[11px] text-danger">
-          {t("voice.hotkeys.pttNeedsSingleKey")}
+      {windowOnly.length > 0 || pttUnavailable ? (
+        <p
+          role="note"
+          data-testid="hotkeys-window-only-warning"
+          className="mt-2 flex items-start gap-1.5 text-[11px] text-muted"
+        >
+          <AlertTriangle
+            className="mt-0.5 size-3.5 shrink-0 text-warning"
+            aria-hidden
+          />
+          <span>{t("voice.hotkeys.windowOnlyWarning")}</span>
         </p>
       ) : null}
       <div className="mt-2 flex items-center gap-2">
@@ -1398,9 +1515,13 @@ export function SettingsDialog() {
         }
       }}
     >
+      {/* One outer height for every section (P33): the header and the tab
+          column are fixed, only the section body scrolls. The height is
+          divided by the interface scale for the same reason as the shared
+          dialog max-height: the desktop shell zooms WebView2 natively. */}
       <DialogContent
         closeLabel={t("settings.close")}
-        className="max-h-[calc(90vh/var(--fixed-scale))] w-[min(920px,94vw)]"
+        className="h-[min(720px,calc((100vh-96px)/var(--fixed-scale)))] max-h-none w-[min(920px,94vw)]"
         data-testid="settings-dialog"
         onOpenAutoFocus={(event) => {
           event.preventDefault();
@@ -1451,7 +1572,7 @@ export function SettingsDialog() {
                     aria-hidden
                   />
                   {t(
-                    item.id === "identity"
+                    item.id === "plugins" ? "newYearShell.plugins" : item.id === "identity"
                       ? "settings.tabs.identity"
                       : `settings.tabs.${item.id}`,
                   )}
@@ -1467,7 +1588,7 @@ export function SettingsDialog() {
             ref={contentRef}
             tabIndex={-1}
             data-testid="settings-content"
-            className="min-h-[420px] min-w-0 flex-1 overflow-y-auto p-4 focus:outline-none"
+            className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 focus:outline-none"
           >
             {section === "profile" ? <ProfileSection /> : null}
             {section === "general" ? <GeneralSection /> : null}
@@ -1477,6 +1598,7 @@ export function SettingsDialog() {
             {section === "identity" ? <IdentitySection /> : null}
             {section === "diagnostics" ? <DiagnosticsSection /> : null}
             {section === "updates" ? <UpdatesSection /> : null}
+            {section === "plugins" ? <PluginSettings /> : null}
             {section === "about" ? <AboutSection /> : null}
           </div>
         </div>

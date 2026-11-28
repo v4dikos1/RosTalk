@@ -26,6 +26,7 @@ below. No GPL, LGPL or AGPL code is linked.
 | [russh](https://github.com/warp-tech/russh) | server setup wizard (SSH) | Apache-2.0 |
 | [React](https://react.dev), [Radix UI](https://www.radix-ui.com), [Tailwind CSS](https://tailwindcss.com) | client interface | MIT |
 | [Golos Text](https://github.com/googlefonts/golos-text) | client interface font | SIL Open Font License 1.1 (`client/ui/src/assets/fonts/golos-text/OFL.txt`) |
+| [Noto Color Emoji](https://github.com/googlefonts/noto-emoji) | client emoji font | SIL Open Font License 1.1 (`client/ui/src/assets/fonts/noto-emoji/OFL.txt`) |
 
 ## File-level copyleft (MPL-2.0)
 

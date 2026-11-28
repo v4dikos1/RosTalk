@@ -413,11 +413,29 @@ fn log_voice(what: &str, error: &rostalk_voice::VoiceError) {
     eprintln!("rostalk: could not apply {what}: {}", error.user_message());
 }
 
+/// What the last sync left installed: the settings signature and whether the
+/// Raw Input registration actually came up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstalledGlobalInput {
+    signature: String,
+    registered: bool,
+}
+
 /// Accelerators already installed, so slider changes do not restart the global
 /// hook on every settings write.
-fn installed_global_input() -> &'static Mutex<Option<String>> {
-    static INSTALLED: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+fn installed_global_input() -> &'static Mutex<Option<InstalledGlobalInput>> {
+    static INSTALLED: OnceLock<Mutex<Option<InstalledGlobalInput>>> = OnceLock::new();
     INSTALLED.get_or_init(|| Mutex::new(None))
+}
+
+/// True when a sync must install again: the settings changed, or the previous
+/// attempt failed to register and would otherwise stay dead until the user
+/// edits a binding. There is no retry loop: the next explicit sync calls this.
+fn needs_reinstall(installed: Option<&InstalledGlobalInput>, signature: &str) -> bool {
+    match installed {
+        Some(installed) => installed.signature != signature || !installed.registered,
+        None => true,
+    }
 }
 
 /// The accelerator stored for one action.
@@ -619,7 +637,7 @@ pub(crate) fn sync_global_input(
     );
     let changed = installed_global_input()
         .lock()
-        .map(|installed| installed.as_deref() != Some(signature.as_str()))
+        .map(|installed| needs_reinstall(installed.as_ref(), &signature))
         .unwrap_or(true);
     if !changed {
         return;
@@ -629,6 +647,7 @@ pub(crate) fn sync_global_input(
         &config,
         global_toggle_sink(core.clone(), voice.clone()),
     );
+    let registered = result.global.registered;
     if let Err(error) = voice.set_ptt_status(result.ptt) {
         log::warn!(
             "could not report the push-to-talk status: {}",
@@ -641,8 +660,13 @@ pub(crate) fn sync_global_input(
             error.user_message()
         );
     }
+    // Remember a failed install too: the next sync retries instead of treating
+    // the unchanged signature as already handled.
     if let Ok(mut installed) = installed_global_input().lock() {
-        *installed = Some(signature);
+        *installed = Some(InstalledGlobalInput {
+            signature,
+            registered,
+        });
     }
 }
 
@@ -1072,6 +1096,37 @@ mod tests {
         assert_eq!(
             is_app_url(&url("http://localhost:1420/")),
             cfg!(debug_assertions)
+        );
+    }
+
+    #[test]
+    fn a_failed_install_is_retried_on_the_next_sync() {
+        let signature = "V||Ctrl+Shift+M|false";
+        assert!(
+            needs_reinstall(None, signature),
+            "a fresh start must install"
+        );
+
+        let registered = InstalledGlobalInput {
+            signature: signature.to_owned(),
+            registered: true,
+        };
+        assert!(
+            !needs_reinstall(Some(&registered), signature),
+            "an unchanged working install must not restart the hook"
+        );
+        assert!(
+            needs_reinstall(Some(&registered), "V||Ctrl+Shift+D|false"),
+            "editing a binding must reinstall"
+        );
+
+        let failed = InstalledGlobalInput {
+            registered: false,
+            ..registered
+        };
+        assert!(
+            needs_reinstall(Some(&failed), signature),
+            "a failed install must be retried even when the signature is unchanged"
         );
     }
 

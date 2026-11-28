@@ -6,6 +6,8 @@ import { UserStateIcons } from "@/components/channels/UserStateIcons";
 import { PresenceDot } from "@/components/common/PresenceDot";
 import { UserAvatar } from "@/components/common/UserAvatar";
 import { AvatarViewerDialog } from "@/components/profile/AvatarViewerDialog";
+import { useAppStore } from "@/store/appStore";
+import { useSettingsStore } from "@/store/settingsStore";
 import { StreamViewerCount } from "@/components/streams/StreamViewers";
 import type { ChannelView, RoleView, UserView } from "@/core/api";
 import { roleName, roleNameStyle } from "@/lib/roles";
@@ -59,6 +61,8 @@ export function MembersPane({
   onUserMenu,
   onOpenProfile,
 }: MembersPaneProps) {
+  const gameEnabled = useSettingsStore((s) => s.persistedNewYear === "enabled" && s.settings?.plugins.newYear === "enabled");
+  const gameTarget = useAppStore((s) => s.newYearTarget);
   const { t } = useTranslation();
   // The open viewer remembers its server and the participant's join: the
   // target is resolved from the current users every render, so a new hash
@@ -79,6 +83,7 @@ export function MembersPane({
   // Focus target for a close that was not requested by the page (a departed
   // participant or a server switch). It is written only in event handlers.
   const avatarRestore = useRef<HTMLElement | null>(null);
+  const treeRestore = useRef<HTMLElement | null>(null);
 
   const byName = useMemo(
     () => (a: UserView, b: UserView) =>
@@ -192,6 +197,14 @@ export function MembersPane({
       avatarRestore.current.focus();
     }
   }, [avatarView]);
+
+  useEffect(() => {
+    if (gameTarget !== null || treeRestore.current === null) return;
+    const row = treeRestore.current;
+    treeRestore.current = null;
+    const frame = requestAnimationFrame(() => { if (row.isConnected) row.focus(); });
+    return () => cancelAnimationFrame(frame);
+  }, [gameTarget]);
 
   return (
     <aside
@@ -318,6 +331,7 @@ export function MembersPane({
           }
         }}
         serverId={serverId}
+        onOpenTree={avatarUser && connected && gameEnabled ? () => { treeRestore.current = avatarRestore.current; useAppStore.getState().openNewYear({ kind: "peer", userId: avatarUser.id, nickname: avatarUser.nickname }); setAvatarView(null); } : undefined}
       />
     </aside>
   );

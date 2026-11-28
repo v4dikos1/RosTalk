@@ -1,0 +1,103 @@
+.new-year-game.ny-dialog {
+  height: min(620px, calc(90vh / var(--fixed-scale)));
+  background: var(--surface-raised);
+  color: var(--foreground);
+}
+.new-year-game .ny-head { display: flex; flex: none; align-items: center; gap: 8px; min-height: 52px; padding: 0 52px 0 16px; border-bottom: 1px solid var(--border); }
+.new-year-game .ny-titles { min-width: 0; flex: 1; }
+.new-year-game .ny-titles h2 { overflow: hidden; margin: 0; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.new-year-game .ny-titles p { overflow: hidden; margin: 0; color: var(--faint-foreground); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.new-year-game .ny-tabs { display: flex; flex: none; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+.new-year-game .ny-tabs [role="tab"] { min-height: 36px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted-foreground); font-size: 13px; white-space: nowrap; cursor: pointer; }
+.new-year-game .ny-tabs [role="tab"][aria-selected="true"] { border-bottom-color: var(--accent); color: var(--foreground); font-weight: 500; }
+.new-year-game .ny-tabs [role="tab"]:hover { color: var(--foreground); }
+.new-year-game button:focus-visible { outline: 2px solid #d7a454; outline-offset: 2px; }
+.new-year-game .ny-body { flex: 1; min-height: 0; padding: 16px; overflow: auto; }
+.new-year-game .ny-banner { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--border); border-left: 3px solid var(--danger); border-radius: 6px; background: var(--surface); font-size: 13px; }
+.new-year-game .ny-banner span { flex: 1; }
+.new-year-game .ny-fatal { display: grid; justify-items: center; gap: 12px; padding: 48px 16px; text-align: center; font-size: 13px; }
+.new-year-game .ny-skeleton { display: grid; gap: 12px; }
+.new-year-game .ny-skeleton span { height: 44px; border-radius: 8px; background: var(--surface-hover); }
+.new-year-game .ny-peer { padding: 48px 16px; text-align: center; font-size: 13px; color: var(--muted-foreground); }
+
+.new-year-game .ny-calendar { display: grid; gap: 16px; }
+.new-year-game .ny-welcome { display: flex; align-items: center; gap: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.new-year-game .ny-welcome img { flex: none; width: 96px; height: 96px; object-fit: contain; border-radius: 6px; }
+.new-year-game .ny-welcome h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+.new-year-game .ny-welcome p { margin: 0; color: var(--muted-foreground); font-size: 13px; }
+.new-year-game .ny-calendar-layout { display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 760px) {
+  .new-year-game .ny-calendar-layout { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+}
+.new-year-game .ny-heading { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.new-year-game h4.ny-heading { margin-top: 16px; }
+.new-year-game .ny-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.new-year-game .ny-weekday { padding-bottom: 2px; color: var(--faint-foreground); font-size: 11px; text-align: center; }
+.new-year-game .ny-day { position: relative; display: flex; min-height: 44px; min-width: 36px; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--foreground); font-size: 12px; cursor: pointer; }
+.new-year-game .ny-day:hover { background: var(--surface-hover); }
+.new-year-game .ny-day[data-status="missed"] { color: var(--faint-foreground); }
+.new-year-game .ny-day[data-status="future"] { color: var(--muted-foreground); }
+.new-year-game .ny-day[data-status="claimed"] { border-color: var(--accent); }
+.new-year-game .ny-day[data-today] { border-width: 2px; border-color: var(--foreground); }
+.new-year-game .ny-day[aria-pressed="true"] { background: var(--surface-active); }
+.new-year-game .ny-day-item, .new-year-game .ny-day-mark { display: grid; width: 24px; height: 24px; place-items: center; }
+.new-year-game .ny-day-water { position: absolute; right: 3px; bottom: 3px; color: var(--muted-foreground); }
+.new-year-game .ny-detail { display: grid; gap: 6px; justify-items: start; margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 13px; }
+.new-year-game .ny-detail h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.new-year-game .ny-detail p { margin: 0; }
+.new-year-game .ny-reward { display: flex; align-items: center; gap: 8px; }
+.new-year-game .ny-reward-art { display: inline-block; width: 40px; height: 40px; }
+.new-year-game .ny-hint { margin: 6px 0 0; color: var(--faint-foreground); font-size: 12px; }
+.new-year-game .ny-live { min-height: 18px; margin-top: 6px; color: var(--muted-foreground); font-size: 12px; }
+.new-year-game .ny-growth { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+.new-year-game .ny-progress { height: 8px; margin-bottom: 12px; overflow: hidden; border-radius: 4px; background: var(--surface-active); }
+.new-year-game .ny-progress span { display: block; height: 100%; background: var(--accent); }
+.new-year-game .ny-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 12px; }
+.new-year-game .ny-stats div { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.new-year-game .ny-stats dt { color: var(--muted-foreground); font-size: 11px; }
+.new-year-game .ny-stats dd { margin: 0; font-size: 18px; font-weight: 600; }
+.new-year-game .ny-history { display: grid; max-height: 220px; gap: 2px; margin: 0; padding: 0; overflow: auto; list-style: none; font-size: 12px; }
+.new-year-game .ny-history li { display: grid; grid-template-columns: minmax(0, 1fr) auto 40px; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.new-year-game .ny-history time { color: var(--faint-foreground); }
+.new-year-game .ny-history strong { text-align: right; }
+
+/* Winter event surfaces stay local to the lazily mounted dialog. */
+.new-year-game.ny-dialog { background: #102235; color: #e7f3f4; border: 1px solid #d7a45466; box-shadow: 0 20px 55px #030c17aa, inset 0 1px #e7f3f41a; }
+.new-year-game .ny-head { min-height: 60px; border-color: #d7a45435; background: #0c1a29; }
+.new-year-game .ny-event-mark { display: grid; flex: none; place-items: center; width: 36px; height: 36px; color: #d7a454; border: 1px solid #d7a45455; border-radius: 10px; background: #d7a45410; }
+.new-year-game .ny-titles h2 { color: #e7f3f4; font-size: 15px; }
+.new-year-game .ny-titles p { color: #aabec8; }
+.new-year-game .ny-readonly { margin-left: 8px; color: #c9dadd; border-color: #d7a45455; vertical-align: middle; }
+.new-year-game .ny-refresh, .new-year-game.ny-dialog > button { color: #cbdcdf; }
+.new-year-game .ny-tabs { width: fit-content; gap: 2px; margin: 12px 16px 0; padding: 3px; border: 1px solid #d7a4543d; border-radius: 10px; background: #0b1927; }
+.new-year-game .ny-tabs [role="tab"] { display: flex; align-items: center; gap: 6px; min-height: 32px; height: 32px; border: 0; border-radius: 7px; color: #b3c7ce; }
+.new-year-game .ny-tabs [role="tab"][aria-selected="true"] { color: #f5e5c4; background: #d7a45424; box-shadow: inset 0 0 0 1px #d7a4544d; }
+.new-year-game .ny-body { padding: 16px; animation: ny-open 150ms ease-out; }
+@keyframes ny-open { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .new-year-game .ny-body { animation: none; } }
+.new-year-game .ny-welcome { border-color: #d7a45455; background: #182d3c; }
+.new-year-game .ny-welcome img { width: 76px; height: 76px; }
+.new-year-game .ny-welcome p, .new-year-game .ny-hint, .new-year-game .ny-history time { color: #adc0c9; }
+.new-year-game .ny-heading { display: flex; align-items: center; gap: 6px; color: #e7f3f4; }
+.new-year-game .ny-weekday { color: #abc0c9; }
+.new-year-game .ny-calendar-note { margin: -4px 0 8px; color: #adc0c9; font-size: 11px; }
+.new-year-game .ny-day { position: relative; height: 44px; min-height: 44px; padding: 2px; border: 1px solid #e7f3f426; color: #e7f3f4; background: #192e3d; border-radius: 7px; }
+.new-year-game .ny-day:hover { background: #263e49; }
+.new-year-game .ny-day[data-status="missed"] { color: #a2b2b8; opacity: .72; }
+.new-year-game .ny-day[data-status="future"] { color: #b4c8ce; }
+.new-year-game .ny-day[data-today] { border: 1px solid #d7a454; box-shadow: inset 0 0 0 1px #d7a45466; }
+.new-year-game .ny-day[aria-pressed="true"] { background: #7d3741; border-color: #d7a454; }
+.new-year-game .ny-day-item { width: 22px; height: 22px; }
+.new-year-game .ny-rarity-dot { position: absolute; right: 5px; top: 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.new-year-game .ny-rarity-common { color: #b9cbd0; }.new-year-game .ny-rarity-rare { color: #8ac8e8; }.new-year-game .ny-rarity-epic { color: #c8b2dc; }.new-year-game .ny-rarity-legendary { color: #e8c077; }
+.new-year-game .ny-detail, .new-year-game .ny-stats div { background: #172d3c; border-color: #d7a45440; }
+.new-year-game .ny-detail { color: #e7f3f4; }
+.new-year-game .ny-detail-placeholder, .new-year-game .ny-stats dt { display: flex; align-items: center; gap: 6px; color: #b9cdd2; }
+.new-year-game .ny-reward-art { width: 54px; height: 54px; flex: none; }
+.new-year-game .ny-detail-preview { display: flex; align-items: center; gap: 8px; }.new-year-game .ny-detail-preview .ny-reward-art { display: block; }.new-year-game .ny-detail-preview .ny-detail-placeholder { margin-bottom: 4px; }
+.new-year-game .ny-progress { background: #071521; }.new-year-game .ny-progress span { background: #d7a454; }
+.new-year-game button:focus-visible, .new-year-game input:focus-visible { outline: 2px solid #d7a454; outline-offset: 2px; }
+.new-year-game button:not([role="tab"]):not(.ny-day):not(.ny-inventory-item)[class*="bg-accent"] { background: #d7a454; color: #102235; }
+.new-year-game .ny-history li { border-color: #d7a4542b; }
+.new-year-game .ny-detail { margin-top: 0; margin-bottom: 12px; }
+@media (max-width: 760px) { .new-year-game .ny-head { padding-left: 12px; }.new-year-game .ny-body { padding: 12px; }.new-year-game .ny-tabs { margin-left: 12px; } }

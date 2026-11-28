@@ -115,7 +115,7 @@ describe("VoiceControls", () => {
     expect(toggle.mock.calls).toEqual([["deafen"], ["mute"]]);
   });
 
-  it("keeps microphone, mode, monitoring and sound in one labelled group", () => {
+  it("keeps microphone, mode, monitoring, sound and leave in one labelled row", () => {
     prepare();
     renderControls();
 
@@ -134,6 +134,15 @@ describe("VoiceControls", () => {
     expect(screen.getByTestId("control-sound")).toHaveAccessibleName(
       "Выключить звук",
     );
+
+    // P33: leaving is the fifth control of the row, not a strip below it.
+    const row = screen.getByTestId("voice-control-row");
+    const leave = screen.getByTestId("control-leave");
+    expect(row).toContainElement(leave);
+    expect(leave).toHaveAccessibleName("Покинуть голосовой канал «Общий»");
+    expect(leave).toHaveClass("size-8");
+    expect(leave).toHaveClass("text-danger");
+    expect(leave).not.toHaveAttribute("aria-pressed");
   });
 
   it("names leaving the voice channel and uses the actual channel", async () => {
@@ -142,9 +151,8 @@ describe("VoiceControls", () => {
     renderControls();
 
     const leave = screen.getByTestId("control-leave");
-    expect(leave).toHaveTextContent("Покинуть канал");
-    expect(leave).toHaveTextContent("Общий");
     expect(leave).toHaveAccessibleName("Покинуть голосовой канал «Общий»");
+    expect(leave).not.toHaveTextContent("Покинуть канал");
 
     await userEvent.click(leave);
     expect(leaveVoiceChannel).toHaveBeenCalledTimes(1);

@@ -1,0 +1,26 @@
+.new-year-game.ny-scene {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  aspect-ratio: 3 / 2;
+  background: #102235;
+}
+.new-year-game .ny-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.new-year-game .ny-aurora {
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(164deg, transparent 10%, rgb(106 207 174 / .23) 24%, rgb(85 165 179 / .14) 31%, transparent 45%);
+}
+.new-year-game .ny-snow {
+  position: absolute; inset: 0; pointer-events: none; opacity: .55;
+  background-image: radial-gradient(circle at 17% 23%, #e7f3f4 1px, transparent 2px), radial-gradient(circle at 72% 17%, #e7f3f4 1px, transparent 2px), radial-gradient(circle at 88% 48%, #e7f3f4 1px, transparent 2px), radial-gradient(circle at 26% 61%, #e7f3f4 1px, transparent 2px), radial-gradient(circle at 64% 72%, #e7f3f4 1px, transparent 2px);
+}
+.new-year-game .ny-tree { position: absolute; bottom: 4%; left: 0; right: 0; margin: auto; aspect-ratio: 2 / 3; }
+.new-year-game .ny-tree-image { position: absolute; inset: 0; width: 100%; height: 100%; mix-blend-mode: screen; }
+.new-year-game .ny-crown { position: absolute; inset: 4% 0 8%; }
+.new-year-game .ny-placement { position: absolute; width: 23.5%; aspect-ratio: 1; padding: 0; border: 0; background: transparent; }
+.new-year-game button.ny-placement { cursor: pointer; }
+.new-year-game button.ny-placement:focus-visible { outline: 2px solid #d7a454; outline-offset: 2px; }
+.new-year-game .ny-ornament-image { display: block; width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 1px 1px rgb(0 0 0 / .6)); }
+.new-year-game .ny-ornament-fallback { display: grid; width: 100%; height: 100%; place-items: center; color: #e7f3f4; opacity: .85; filter: drop-shadow(0 1px 2px #102235); }
+
+.new-year-game .ny-atmosphere { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 35% 16% at 50% 94%, rgb(215 164 84 / .19), transparent 75%), radial-gradient(ellipse at center, transparent 48%, rgb(3 12 22 / .28) 100%); }

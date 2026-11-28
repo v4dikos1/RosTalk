@@ -349,7 +349,7 @@ export const fixtureDevices: DeviceList = {
 /** Monitor state used by the gallery and screenshots. */
 /** Settings shown in screenshots; the wizard is opened explicitly there. */
 export const fixtureSettings: ClientSettings = {
-  version: 3,
+  version: 4,
   theme: "dark",
   locale: "ru",
   compact: false,
@@ -371,6 +371,7 @@ export const fixtureSettings: ClientSettings = {
     chatBackground: "none",
   },
   diagnostics: { consent: "granted" },
+  plugins: { newYear: "absent" },
   updateSource: null,
   autostart: false,
   voice: {

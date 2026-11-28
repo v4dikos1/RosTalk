@@ -231,18 +231,21 @@ type Config struct {
 	Now func() time.Time
 	// RateInterval overrides the send limiter in tests.
 	RateInterval time.Duration
+	// OnChannelText runs in the message transaction after a qualifying insert.
+	OnChannelText func(context.Context, *db.Queries, int64, int64) error
 }
 
 // Service is the chat model.
 type Service struct {
-	store    *store.Store
-	roles    *roles.Service
-	hub      *state.Hub
-	filesDir string
-	logger   *slog.Logger
-	now      func() time.Time
-	settings func() store.Settings
-	interval time.Duration
+	store         *store.Store
+	roles         *roles.Service
+	hub           *state.Hub
+	filesDir      string
+	logger        *slog.Logger
+	now           func() time.Time
+	settings      func() store.Settings
+	interval      time.Duration
+	onChannelText func(context.Context, *db.Queries, int64, int64) error
 
 	limitMu sync.Mutex
 	buckets map[int64]*bucket
@@ -288,16 +291,17 @@ func New(cfg Config) (*Service, error) {
 		return nil, err
 	}
 	return &Service{
-		store:       cfg.Store,
-		roles:       cfg.Roles,
-		hub:         cfg.Hub,
-		filesDir:    cfg.FilesDir,
-		logger:      logger,
-		now:         now,
-		settings:    settings,
-		interval:    interval,
-		buckets:     make(map[int64]*bucket),
-		uploadSlots: make(chan struct{}, MaxConcurrentUploads),
+		store:         cfg.Store,
+		roles:         cfg.Roles,
+		hub:           cfg.Hub,
+		filesDir:      cfg.FilesDir,
+		logger:        logger,
+		now:           now,
+		settings:      settings,
+		interval:      interval,
+		onChannelText: cfg.OnChannelText,
+		buckets:       make(map[int64]*bucket),
+		uploadSlots:   make(chan struct{}, MaxConcurrentUploads),
 	}, nil
 }
 
@@ -377,6 +381,9 @@ func (s *Service) Send(ctx context.Context, userID int64, conv Conversation, bod
 			}); mentionErr != nil {
 				return fmt.Errorf("insert mention: %w", mentionErr)
 			}
+		}
+		if s.onChannelText != nil && row.ChannelID.Valid && body != "" {
+			return s.onChannelText(ctx, q, row.SenderID, row.ID)
 		}
 		return nil
 	})

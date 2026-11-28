@@ -25,11 +25,12 @@ use crate::error::{CoreError, CoreErrorCode};
 
 /// Version of the settings file layout. Version 2 adds the appearance section
 /// (preset, accent, density, radius, scale, chat background); version 3 adds
-/// the diagnostics consent. A version 1 file is migrated on load: the old
+/// the diagnostics consent; version 4 adds the plugin installation state.
+/// A version 1 file is migrated on load: the old
 /// `theme` selects the initial preset, so a light theme becomes `paper` and a
 /// dark one stays `rostalk`. Files older than version 3 get `Undecided`: the
 /// client never assumes consent for a log it was not allowed to keep.
-pub const SETTINGS_FORMAT_VERSION: u32 = 3;
+pub const SETTINGS_FORMAT_VERSION: u32 = 4;
 
 /// File name inside the application data directory.
 const SETTINGS_FILE: &str = "settings.json";
@@ -671,6 +672,21 @@ fn default_activation_threshold() -> f32 {
     -45.0
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum NewYearPluginState {
+    #[default]
+    Absent,
+    Enabled,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSettings {
+    pub new_year: NewYearPluginState,
+}
+
 /// Everything the core persists for the interface and the voice engine.
 ///
 /// `theme` and `compact` stay in the file: the tray, the window title and an
@@ -723,6 +739,7 @@ pub struct ClientSettings {
     pub appearance: AppearanceSettings,
     /// Local diagnostics consent and nothing else.
     pub diagnostics: DiagnosticsSettings,
+    pub plugins: PluginSettings,
     pub voice: VoiceSettings,
     pub participants: Vec<ParticipantSettings>,
     /// True when the incoming payload carried an `appearance` section. An UI
@@ -735,9 +752,11 @@ pub struct ClientSettings {
     /// the user's consent to `Undecided` (or, worse, to a decision they made).
     #[serde(skip)]
     diagnostics_provided: bool,
+    #[serde(skip)]
+    plugins_provided: bool,
 }
 
-/// Wire shape used to notice a missing `appearance` or `diagnostics` section.
+/// Wire shape used to notice whole sections omitted by older bundles.
 /// Serde cannot tell "absent" from "defaulted" once the struct is built, so the
 /// answer is recorded while parsing.
 #[derive(Deserialize)]
@@ -769,6 +788,8 @@ struct ClientSettingsWire {
     appearance: Option<AppearanceSettings>,
     #[serde(default)]
     diagnostics: Option<DiagnosticsSettings>,
+    #[serde(default)]
+    plugins: Option<PluginSettings>,
     voice: VoiceSettings,
     #[serde(default)]
     participants: Vec<ParticipantSettings>,
@@ -782,6 +803,7 @@ impl<'de> Deserialize<'de> for ClientSettings {
         let wire = ClientSettingsWire::deserialize(deserializer)?;
         let appearance_provided = wire.appearance.is_some();
         let diagnostics_provided = wire.diagnostics.is_some();
+        let plugins_provided = wire.plugins.is_some();
         Ok(Self {
             version: wire.version,
             theme: wire.theme,
@@ -800,10 +822,12 @@ impl<'de> Deserialize<'de> for ClientSettings {
             self_deafened: wire.self_deafened,
             appearance: wire.appearance.unwrap_or_default(),
             diagnostics: wire.diagnostics.unwrap_or_default(),
+            plugins: wire.plugins.unwrap_or_default(),
             voice: wire.voice,
             participants: wire.participants,
             appearance_provided,
             diagnostics_provided,
+            plugins_provided,
         })
     }
 }
@@ -828,10 +852,12 @@ impl Default for ClientSettings {
             self_deafened: false,
             appearance: AppearanceSettings::default(),
             diagnostics: DiagnosticsSettings::default(),
+            plugins: PluginSettings::default(),
             voice: VoiceSettings::default(),
             participants: Vec::new(),
             appearance_provided: true,
             diagnostics_provided: true,
+            plugins_provided: true,
         }
     }
 }
@@ -867,6 +893,7 @@ impl ClientSettings {
         self.version = SETTINGS_FORMAT_VERSION;
         self.appearance_provided = true;
         self.diagnostics_provided = true;
+        self.plugins_provided = true;
         self.appearance = self.appearance.sanitized();
         // Derived fields: the appearance section is the only source of truth.
         self.theme = self.appearance.preset.theme();
@@ -1086,9 +1113,7 @@ impl SettingsStore {
     ///
     /// A payload from a UI bundle built before the appearance stage has no
     /// `appearance` field; the stored section is kept instead of being reset to
-    /// the defaults. The same guard keeps a bundle that predates the
-    /// diagnostics consent from resetting the user's decision. Everything else
-    /// is a full replacement.
+    /// the defaults. The same guard applies to `diagnostics` and `plugins`.
     pub fn replace(&mut self, settings: ClientSettings) -> Result<ClientSettings, CoreError> {
         let mut settings = settings;
         if !settings.appearance_provided {
@@ -1097,8 +1122,12 @@ impl SettingsStore {
         if !settings.diagnostics_provided {
             settings.diagnostics = self.settings.diagnostics;
         }
-        self.settings = settings.sanitized();
-        self.save()?;
+        if !settings.plugins_provided {
+            settings.plugins = self.settings.plugins;
+        }
+        let settings = settings.sanitized();
+        self.save_settings(&settings)?;
+        self.settings = settings;
         Ok(self.settings())
     }
 
@@ -1147,10 +1176,14 @@ impl SettingsStore {
     }
 
     fn save(&self) -> Result<(), CoreError> {
+        self.save_settings(&self.settings)
+    }
+
+    fn save_settings(&self, settings: &ClientSettings) -> Result<(), CoreError> {
         if self.path.as_os_str().is_empty() {
             return Ok(());
         }
-        let data = serde_json::to_vec_pretty(&self.settings)
+        let data = serde_json::to_vec_pretty(settings)
             .map_err(|err| CoreError::internal(format!("encode settings.json: {err}")))?;
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
@@ -1176,8 +1209,8 @@ fn parse_settings(data: &[u8]) -> Option<ClientSettings> {
     let mut value: Value = serde_json::from_slice(data).ok()?;
     let version = value.get("version").and_then(Value::as_u64).unwrap_or(1);
     // Version 1 is the unified layout without `appearance`; version 2 adds it
-    // and version 3 adds `diagnostics` (absent means `Undecided`). A file from
-    // a newer client is reset rather than half-read.
+    // and versions 3 and 4 add `diagnostics` and `plugins` with safe defaults.
+    // A file from a newer client is reset rather than half-read.
     if version == 0 || version > u64::from(SETTINGS_FORMAT_VERSION) {
         log::warn!("settings.json has an unknown version and will be reset");
         return None;
@@ -1831,6 +1864,81 @@ mod tests {
         assert_eq!(saved.diagnostics.consent, DiagnosticsConsent::Denied);
         let reopened = SettingsStore::open(dir.path()).settings();
         assert_eq!(reopened.diagnostics.consent, DiagnosticsConsent::Denied);
+    }
+
+    #[test]
+    fn version_3_file_migrates_to_version_4_with_new_year_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(SETTINGS_FILE);
+        let mut legacy = serde_json::to_value(ClientSettings::default()).expect("json");
+        legacy["version"] = Value::from(3);
+        legacy["nickname"] = Value::from("Alex");
+        legacy["diagnostics"]["consent"] = Value::from("denied");
+        legacy.as_object_mut().expect("object").remove("plugins");
+        std::fs::write(&path, serde_json::to_vec(&legacy).expect("json")).expect("write v3");
+
+        let migrated = SettingsStore::open(dir.path()).settings();
+        assert_eq!(migrated.version, 4);
+        assert_eq!(migrated.nickname, "Alex");
+        assert_eq!(migrated.diagnostics.consent, DiagnosticsConsent::Denied);
+        assert_eq!(migrated.plugins.new_year, NewYearPluginState::Absent);
+        let persisted: ClientSettings =
+            serde_json::from_slice(&std::fs::read(&path).expect("read v4")).expect("parse v4");
+        assert!(persisted.plugins_provided);
+        assert_eq!(persisted, migrated);
+        assert_eq!(SettingsStore::open(dir.path()).settings(), migrated);
+    }
+
+    #[test]
+    fn missing_plugin_section_preserves_installation_and_explicit_absent_uninstalls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut store = SettingsStore::open(dir.path());
+        for installed in [NewYearPluginState::Enabled, NewYearPluginState::Disabled] {
+            let mut settings = store.settings();
+            settings.plugins.new_year = installed;
+            store.replace(settings).expect("save installation state");
+
+            let mut legacy = serde_json::to_value(store.settings()).expect("json");
+            legacy["version"] = Value::from(3);
+            legacy.as_object_mut().expect("object").remove("plugins");
+            let payload: ClientSettings = serde_json::from_value(legacy).expect("legacy payload");
+            assert!(!payload.plugins_provided);
+            assert_eq!(payload.plugins.new_year, NewYearPluginState::Absent);
+            store.replace(payload).expect("apply older writer");
+            store = SettingsStore::open(dir.path());
+            assert_eq!(store.settings().plugins.new_year, installed);
+        }
+
+        let mut uninstall = serde_json::to_value(store.settings()).expect("json");
+        uninstall["plugins"]["newYear"] = Value::from("absent");
+        let payload: ClientSettings = serde_json::from_value(uninstall).expect("uninstall payload");
+        store.replace(payload).expect("uninstall");
+        assert_eq!(
+            SettingsStore::open(dir.path()).settings().plugins.new_year,
+            NewYearPluginState::Absent
+        );
+    }
+
+    #[test]
+    fn failed_plugin_save_keeps_previous_state_in_memory_and_on_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut store = SettingsStore::open(dir.path());
+        let mut settings = store.settings();
+        settings.plugins.new_year = NewYearPluginState::Disabled;
+        store.replace(settings.clone()).expect("persist disabled");
+        let tmp = dir.path().join(SETTINGS_FILE).with_extension("json.tmp");
+        std::fs::create_dir(tmp).expect("block temporary file");
+
+        settings.plugins.new_year = NewYearPluginState::Enabled;
+        assert!(store.replace(settings).is_err());
+        assert_eq!(
+            store.settings().plugins.new_year,
+            NewYearPluginState::Disabled
+        );
+        assert_eq!(
+            SettingsStore::open(dir.path()).settings().plugins.new_year,
+            NewYearPluginState::Disabled
+        );
     }
 
     #[test]

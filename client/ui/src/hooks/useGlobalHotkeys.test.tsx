@@ -185,6 +185,22 @@ describe("useGlobalHotkeys", () => {
     expect(toggleVoiceState).toHaveBeenCalledTimes(1);
   });
 
+  it("returns mute to the window when the install did not register", () => {
+    const toggleVoiceState = vi
+      .spyOn(coreApi, "toggleVoiceState")
+      .mockResolvedValue(undefined);
+    bind("toggleMute", "F8");
+    // A stale per-action flag must not hide a failed registration: without a
+    // running hook the window is the only layer that can handle the key.
+    voiceWithHook("active", { registered: false, toggleMute: true });
+    render(<Harness />);
+
+    press({ code: "F8", key: "F8" });
+
+    expect(toggleVoiceState).toHaveBeenCalledTimes(1);
+    expect(toggleVoiceState).toHaveBeenCalledWith("mute");
+  });
+
   it("ignores a local mute while the server mutes the user", () => {
     const state = structuredClone(fixtureState);
     const self = state.users.find((user) => user.id === state.selfUserId);

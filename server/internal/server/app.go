@@ -35,6 +35,7 @@ import (
 	"github.com/v4dikos1/RosTalk/server/internal/metrics"
 	"github.com/v4dikos1/RosTalk/server/internal/nat"
 	"github.com/v4dikos1/RosTalk/server/internal/netutil"
+	"github.com/v4dikos1/RosTalk/server/internal/newyear"
 	"github.com/v4dikos1/RosTalk/server/internal/roles"
 	"github.com/v4dikos1/RosTalk/server/internal/secret"
 	"github.com/v4dikos1/RosTalk/server/internal/sessionauth"
@@ -117,6 +118,17 @@ type Config struct {
 	// Version is the build identity reported in ServerInfo.version.
 	Version string
 	Logger  *slog.Logger
+	// NewYearDisabled leaves the New Year event out: no routes, no chat or
+	// voice hooks and no event loop (ROSTALK_NEW_YEAR_DISABLED).
+	NewYearDisabled bool
+	// NewYearTZ is the IANA zone of the event calendar (ROSTALK_NEW_YEAR_TZ).
+	// Empty uses the TZ environment variable when it names an IANA zone, then
+	// UTC. The first resolved zone is persisted for the season.
+	NewYearTZ string
+	// NewYearNow and NewYearDraw replace the event clock and random draw in
+	// Go tests. There is no runtime setting or endpoint for either.
+	NewYearNow  func() time.Time
+	NewYearDraw func(bound int) (int, error)
 }
 
 // App is a fully wired server instance.
@@ -143,6 +155,8 @@ type App struct {
 	Avatars *avatars.Service
 	// Tokens maps the chat HTTP bearer tokens to user sessions.
 	Tokens *sessionauth.Registry
+	// NewYear is the seasonal event, nil when disabled or misconfigured.
+	NewYear *newyear.Service
 	// NAT is the router port-forward session, nil with --nat=off or when the
 	// router refused.
 	NAT *nat.Session
@@ -156,6 +170,8 @@ type App struct {
 	// drain loop.
 	internal       context.Context
 	internalCancel context.CancelFunc
+	// eventDone closes when the New Year loop has returned.
+	eventDone chan struct{}
 
 	mu          sync.Mutex
 	adminInvite string
@@ -343,7 +359,8 @@ func (a *App) Start(ctx context.Context) error {
 		Visibility: a.Roles,
 		Tokens:     a.Tokens,
 	})
-	a.Chat, err = chat.New(chat.Config{
+	a.NewYear = a.openNewYear(ctx)
+	chatCfg := chat.Config{
 		Store:    a.Store,
 		Roles:    a.Roles,
 		Hub:      a.Hub,
@@ -355,7 +372,11 @@ func (a *App) Start(ctx context.Context) error {
 			}
 			return a.Control.Settings()
 		},
-	})
+	}
+	if a.NewYear != nil {
+		chatCfg.OnChannelText = a.NewYear.RewardChat
+	}
+	a.Chat, err = chat.New(chatCfg)
 	if err != nil {
 		return err
 	}
@@ -447,6 +468,11 @@ func (a *App) Start(ctx context.Context) error {
 		Avatars:  a.Avatars,
 		Sessions: a.Tokens,
 		Logger:   a.logger,
+		NewYear:  a.NewYear,
+		NewYearVisible: func(viewer, target int64) bool {
+			presence, ok := a.Hub.Presence(target)
+			return ok && a.Roles.CanView(viewer, presence.ChannelID)
+		},
 	})
 	if err != nil {
 		return err
@@ -474,6 +500,13 @@ func (a *App) Start(ctx context.Context) error {
 	if err := a.Gateway.Start(); err != nil {
 		return err
 	}
+	if a.NewYear != nil {
+		a.eventDone = make(chan struct{})
+		go func() {
+			defer close(a.eventDone)
+			a.NewYear.RunActivity(a.internal, a.Control.SnapshotVoiceActivity, a.logger)
+		}()
+	}
 	a.addr = a.Gateway.Addr()
 	a.logger.Info("gateway listening", "addr", a.addr.String(), "media_url", a.mediaURL())
 	a.startNAT(ctx)
@@ -486,6 +519,27 @@ func (a *App) Start(ctx context.Context) error {
 		)
 	}
 	return nil
+}
+
+// openNewYear builds the seasonal event. A disabled or misconfigured event
+// leaves chat and voice untouched: it only logs and returns nil.
+func (a *App) openNewYear(ctx context.Context) *newyear.Service {
+	if a.cfg.NewYearDisabled {
+		a.logger.Info("New Year event disabled by ROSTALK_NEW_YEAR_DISABLED")
+		return nil
+	}
+	service, err := newyear.New(ctx, a.Store, newyear.Config{
+		Zone:     a.cfg.NewYearTZ,
+		ServerTZ: os.Getenv("TZ"),
+		Now:      a.cfg.NewYearNow,
+		Draw:     a.cfg.NewYearDraw,
+	})
+	if err != nil {
+		a.logger.Error("New Year event unavailable, chat keeps running; fix ROSTALK_NEW_YEAR_TZ or set ROSTALK_NEW_YEAR_DISABLED=true", "error", err)
+		return nil
+	}
+	a.logger.Info("New Year event ready", "season", newyear.Season, "zone", service.Zone())
+	return service
 }
 
 // Addr returns the bound HTTPS address.
@@ -593,6 +647,9 @@ func (a *App) Close(ctx context.Context) error {
 		a.internalCancel = nil
 	}
 	a.mu.Unlock()
+	if a.eventDone != nil {
+		<-a.eventDone
+	}
 	if a.Media != nil && a.ownsMedia {
 		if err := a.Media.Close(); err != nil {
 			errs = append(errs, err)

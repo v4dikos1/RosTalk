@@ -3,10 +3,10 @@ import type { ReactNode } from "react";
 /**
  * Safe renderer of the simplified message markup (stage 4.1).
  *
- * Supported: **bold**, *italic*, `inline code`, fenced ``` code ``` blocks and
- * http(s) links. Everything else — including HTML tags and scripts — is plain
- * text. This module never builds HTML strings and never uses
- * `dangerouslySetInnerHTML`, which the security test asserts.
+ * Supported: **bold**, *italic*, `inline code`, fenced ``` code ``` blocks,
+ * http(s) links and confirmed `@mentions`. Everything else — including HTML
+ * tags and scripts — is plain text. This module never builds HTML strings and
+ * never uses `dangerouslySetInnerHTML`, which the security test asserts.
  */
 
 const TOKEN =
@@ -14,11 +14,57 @@ const TOKEN =
 
 const FENCE = /```(?:\w*\n)?([\s\S]*?)```/g;
 
-export function Markup({ text }: { text: string }) {
-  return <>{renderText(text)}</>;
+/** Same boundaries as the server's mention resolver. */
+const MENTION_BOUNDARY_BEFORE = /[\s([{<,;:.!?]/;
+const MENTION_WORD_AFTER = /[\p{L}\p{N}_-]/u;
+
+type MentionClick = (userId: number, clientX: number, clientY: number) => void;
+
+interface MentionEntry {
+  /** Lowercase nickname. */
+  name: string;
+  id: number;
 }
 
-function renderText(text: string): ReactNode[] {
+export interface MarkupProps {
+  text: string;
+  /**
+   * Lowercase nickname to a confirmed user id. Only ids the server actually
+   * recorded for this message belong here; unknown `@name` stays plain text.
+   */
+  mentions?: ReadonlyMap<string, number>;
+  /** Opens the user menu for a confirmed mention. */
+  onMentionClick?: MentionClick;
+}
+
+export function Markup({ text, mentions, onMentionClick }: MarkupProps) {
+  const entries = mentionEntries(mentions, onMentionClick);
+  return <>{renderText(text, entries, onMentionClick)}</>;
+}
+
+/** Longest nickname first, so "@Anna Maria" wins over "@Anna". */
+function mentionEntries(
+  mentions: ReadonlyMap<string, number> | undefined,
+  onMentionClick: MentionClick | undefined,
+): MentionEntry[] {
+  if (!mentions || !onMentionClick) {
+    return [];
+  }
+  const entries: MentionEntry[] = [];
+  for (const [nickname, id] of mentions) {
+    const name = nickname.trim().toLowerCase();
+    if (name) {
+      entries.push({ name, id });
+    }
+  }
+  return entries.sort((a, b) => b.name.length - a.name.length);
+}
+
+function renderText(
+  text: string,
+  entries: MentionEntry[],
+  onMentionClick: MentionClick | undefined,
+): ReactNode[] {
   const nodes: ReactNode[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -26,7 +72,14 @@ function renderText(text: string): ReactNode[] {
   FENCE.lastIndex = 0;
   while ((match = FENCE.exec(text)) !== null) {
     if (match.index > lastIndex) {
-      nodes.push(...renderInline(text.slice(lastIndex, match.index), `i${key++}`));
+      nodes.push(
+        ...renderInline(
+          text.slice(lastIndex, match.index),
+          `i${key++}`,
+          entries,
+          onMentionClick,
+        ),
+      );
     }
     nodes.push(
       <pre
@@ -39,20 +92,40 @@ function renderText(text: string): ReactNode[] {
     lastIndex = match.index + match[0].length;
   }
   if (lastIndex < text.length) {
-    nodes.push(...renderInline(text.slice(lastIndex), `i${key}`));
+    nodes.push(
+      ...renderInline(
+        text.slice(lastIndex),
+        `i${key}`,
+        entries,
+        onMentionClick,
+      ),
+    );
   }
   return nodes;
 }
 
-function renderInline(text: string, prefix: string): ReactNode[] {
+function renderInline(
+  text: string,
+  prefix: string,
+  entries: MentionEntry[],
+  onMentionClick: MentionClick | undefined,
+): ReactNode[] {
   const nodes: ReactNode[] = [];
   let lastIndex = 0;
   let key = 0;
+  let plain = 0;
   TOKEN.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = TOKEN.exec(text)) !== null) {
     if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
+      nodes.push(
+        ...renderPlain(
+          text.slice(lastIndex, match.index),
+          `${prefix}-p${plain++}`,
+          entries,
+          onMentionClick,
+        ),
+      );
     }
     const token = match[0];
     const id = `${prefix}-${key++}`;
@@ -92,9 +165,104 @@ function renderInline(text: string, prefix: string): ReactNode[] {
     lastIndex = match.index + token.length;
   }
   if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
+    nodes.push(
+      ...renderPlain(
+        text.slice(lastIndex),
+        `${prefix}-p${plain}`,
+        entries,
+        onMentionClick,
+      ),
+    );
   }
   return nodes;
+}
+
+/**
+ * Splits one plain segment into text and confirmed mention buttons.
+ *
+ * Mentions are matched against the known nicknames, not against a guessed
+ * character class: nicknames may contain spaces, so the map is the truth. A
+ * mention needs the same boundary before `@` and after the name as the server,
+ * which keeps `mail@host` and `@Ann` (for "Anna") plain.
+ */
+function renderPlain(
+  text: string,
+  prefix: string,
+  entries: MentionEntry[],
+  onMentionClick: MentionClick | undefined,
+): ReactNode[] {
+  if (entries.length === 0 || !onMentionClick || !text.includes("@")) {
+    return [text];
+  }
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  let key = 0;
+  let at = text.indexOf("@");
+  while (at !== -1) {
+    if (at >= cursor) {
+      const before = at > 0 ? text[at - 1] : "";
+      if (
+        before === undefined ||
+        before === "" ||
+        MENTION_BOUNDARY_BEFORE.test(before)
+      ) {
+        const mention = matchMention(text, at, entries);
+        if (mention) {
+          if (at > cursor) {
+            nodes.push(text.slice(cursor, at));
+          }
+          const label = text.slice(at, at + 1 + mention.length);
+          nodes.push(
+            <button
+              key={`${prefix}-m${key++}`}
+              type="button"
+              data-mention-id={mention.id}
+              onClick={(event) =>
+                onMentionClick(mention.id, event.clientX, event.clientY)
+              }
+              className="rounded-sm font-medium text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            >
+              {label}
+            </button>,
+          );
+          cursor = at + 1 + mention.length;
+          at = text.indexOf("@", cursor);
+          continue;
+        }
+      }
+    }
+    at = text.indexOf("@", at + 1);
+  }
+  if (cursor === 0) {
+    return [text];
+  }
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor));
+  }
+  return nodes;
+}
+
+/** The longest known nickname that starts here, if it ends at a boundary. */
+function matchMention(
+  text: string,
+  at: number,
+  entries: MentionEntry[],
+): { id: number; length: number } | null {
+  for (const entry of entries) {
+    const end = at + 1 + entry.name.length;
+    if (end > text.length) {
+      continue;
+    }
+    if (text.slice(at + 1, end).toLowerCase() !== entry.name) {
+      continue;
+    }
+    const after = end < text.length ? text[end] : "";
+    if (after && MENTION_WORD_AFTER.test(after)) {
+      continue;
+    }
+    return { id: entry.id, length: entry.name.length };
+  }
+  return null;
 }
 
 const TRAILING = /[.,;:!?)\]}]+$/;

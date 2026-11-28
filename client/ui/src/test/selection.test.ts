@@ -27,6 +27,18 @@ describe("global selection and control surface rules", () => {
     expect(buttons?.[1]).toMatch(/box-shadow:\s*var\(--control-shadow\);/);
   });
 
+  it("keeps focus flat and draws the keyboard ring as an outline", () => {
+    // ring-* utilities are box-shadows in @layer utilities; the focus rules
+    // live outside the layers so no utility can paint a shadow under a
+    // focused button. The keyboard indicator is an outline instead.
+    expect(css).toMatch(
+      /button:focus,\s*\[role="button"\]:focus\s*\{[^}]*box-shadow:\s*var\(--control-shadow\);/s,
+    );
+    expect(css).toMatch(
+      /button:focus-visible,\s*\[role="button"\]:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/s,
+    );
+  });
+
   it("keeps panel elevation in its own tokens", () => {
     // The flat control rule must not swallow intentional sheet/popover depth.
     expect(css).toMatch(/--shadow-panel:\s*0 12px 32px/);

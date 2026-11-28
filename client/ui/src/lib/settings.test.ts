@@ -5,11 +5,28 @@ import {
   YCUKEN_TO_QWERTY,
   acceleratorFromEvent,
   assignHotkey,
+  clampSettings,
   matchesAccelerator,
   matchesMouseAccelerator,
+  mergeSettings,
   migrateAccelerator,
   normalizeHotkeys,
 } from "./settings";
+
+describe("New Year settings", () => {
+  it("defaults an older settings snapshot to absent", () => {
+    const legacy = { ...DEFAULT_SETTINGS, version: 3 };
+    Reflect.deleteProperty(legacy, "plugins");
+    expect(clampSettings(legacy).plugins).toEqual({ newYear: "absent" });
+  });
+
+  it("keeps installation on unrelated edits and supports explicit uninstall", () => {
+    const installed = mergeSettings(DEFAULT_SETTINGS, { plugins: { newYear: "enabled" } });
+    const disabled = mergeSettings(installed, { plugins: { newYear: "disabled" } });
+    expect(mergeSettings(disabled, { nickname: "Alex" }).plugins.newYear).toBe("disabled");
+    expect(mergeSettings(disabled, { plugins: { newYear: "absent" } }).plugins.newYear).toBe("absent");
+  });
+});
 
 /** A keyboard event; `key` is the character the layout produced. */
 function keyEvent(
